@@ -8,6 +8,7 @@ import styles from './QuestionInput.module.css'
 import { ChatMessage } from '../../api'
 import { AppStateContext } from '../../state/AppProvider'
 import { resizeImage } from '../../utils/resizeImage'
+import { MicButton } from '../MicButton/MicButton'
 
 interface Props {
   onSend: (question: ChatMessage['content'], id?: string) => void
@@ -74,6 +75,7 @@ export const QuestionInput = ({ onSend, disabled, placeholder, clearOnSend, conv
 
   const sendQuestionDisabled = disabled || !question.trim()
 
+
   return (
     <Stack horizontal className={styles.questionInputContainer}>
       <TextField
@@ -117,6 +119,7 @@ export const QuestionInput = ({ onSend, disabled, placeholder, clearOnSend, conv
           <img src={Send} className={styles.questionInputSendButton} alt="Send Button" />
         )}
       </div>
+       <MicButton onTranscript={(text) => setQuestion(prev => prev + (prev ? ' ' : '') + text)} />
       <div className={styles.questionInputBottomBorder} />
     </Stack>
   )

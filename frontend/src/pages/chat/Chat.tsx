@@ -35,7 +35,6 @@ import {
 } from "../../api";
 import { Answer } from "../../components/Answer";
 import { QuestionInput } from "../../components/QuestionInput";
-import { MicButton } from "../../components/MicButton/MicButton";
 import { ChatHistoryPanel } from "../../components/ChatHistory/ChatHistoryPanel";
 import { AppStateContext } from "../../state/AppProvider";
 import { useBoolean } from "@fluentui/react-hooks";
@@ -66,7 +65,6 @@ const Chat = () => {
   const [errorMsg, setErrorMsg] = useState<ErrorMessage | null>()
   const [logo, setLogo] = useState('')
   const [answerId, setAnswerId] = useState<string>('')
-  const [question, setQuestion] = useState<string>('')
 
   const errorDialogContentProps = {
     type: DialogType.close,
@@ -749,9 +747,6 @@ const Chat = () => {
     }
     return null;
   }
-  const handleTranscript = (text: string) => {
-    setQuestion(text)
-  }
 
   const disabledButton = () => {
     return (
@@ -761,8 +756,6 @@ const Chat = () => {
       appStateContext?.state.chatHistoryLoadingState === ChatHistoryLoadingState.Loading
     )
   }
-  
-  
 
   return (
     <div className={styles.container} role="main">
@@ -951,7 +944,6 @@ const Chat = () => {
                   appStateContext?.state.currentChat?.id ? appStateContext?.state.currentChat?.id : undefined
                 }
               />
-              <MicButton onTranscript={handleTranscript} />
             </Stack>
           </div>
           {/* Citation Panel */}
