@@ -37,6 +37,7 @@ from backend.utils import (
 )
 import tempfile
 import azure.cognitiveservices.speech as speechsdk
+import ffmpeg
 
 SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY")
 SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
@@ -79,7 +80,16 @@ async def transcribe():
     # write to a temp file
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         tmp.write(data)
-        wav_path = tmp.name
+        webm_path = tmp.name
+        wav_path = tempfile.mktemp(suffix=".wav")
+    try:
+        ffmpeg.input(webm_path).output(wav_path).run()
+
+    except Exception as e:
+        print("❌ FFmpeg conversion failed:", e)
+        return jsonify({"text": "", "error": "ffmpeg conversion failed"}), 500
+
+
     #configure speech SDK
     speech_config = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
 
