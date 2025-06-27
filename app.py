@@ -99,6 +99,8 @@ async def transcribe():
     )
     #stops on first pause
     result = recognizer.recognize_once()
+    print("🗣️  Recognizer result.reason:", result.reason)
+    print("🗣️  Recognized text:", repr(result.text))
     text = result.text if result.reason == speechsdk.ResultReason.RecognizedSpeech else ""
     return jsonify({"text": text})
 
