@@ -35,6 +35,11 @@ from backend.utils import (
     convert_to_pf_format,
     format_pf_non_streaming_response,
 )
+import tempfile
+import azure.cognitiveservices.speech as speechsdk
+
+SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY")
+SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
 
 bp = Blueprint("routes", __name__, static_folder="static", template_folder="static")
 
@@ -67,6 +72,35 @@ async def index():
         favicon=app_settings.ui.favicon
     )
 
+@bp.route("/transcribe", methods=["POST"])
+async def transcribe():
+    #read raw audio bytes
+    data = await request.data
+    # write to a temp file
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(data)
+        wav_path = tmp.name
+    #configure speech SDK
+    speech_config = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
+
+    #languages to auto-detect
+    langs = ["de-DE", "en-US", "tr-TR", "es-ES"]
+    auto_lang = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(langs)
+
+    #3s silence timeout
+    speech_config.set_property(
+        speechsdk.PropertyId.Speech_SegmentationSilenceTimeoutMs,"3000"
+    )
+    audio_input = speechsdk.audio.AudioConfig(filename=wav_path)
+    recognizer = speechsdk.SpeechRecognizer(
+        speech_config=speech_config, #3s silence rule
+        auto_detect_source_language_config=auto_lang, #langs
+        audio_config=audio_input 
+    )
+    #stops on first pause
+    result = recognizer.recognize_once()
+    text = result.text if result.reason == speechsdk.ResultReason.RecognizedSpeech else ""
+    return jsonify({"text": text})
 
 @bp.route("/favicon.ico")
 async def favicon():
