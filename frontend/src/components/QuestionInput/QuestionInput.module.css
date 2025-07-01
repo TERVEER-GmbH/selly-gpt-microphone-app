@@ -22,9 +22,15 @@
 }
 
 .questionInputSendButtonContainer {
-  position: absolute;
-  right: 24px;
-  bottom: 20px;
+  /*position: absolute;*/
+  /*right: 24px;
+  bottom: 20px;*/
+  display: flex;
+  flex-direction: row; /* make children align horizontally */
+  align-items: center;
+  gap: 8px; /* spacing between mic adn send button */
+  margin-right: 15px;
+  margin-bottom: -5px;
 }
 
 .questionInputSendButton {

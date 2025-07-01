@@ -106,8 +106,9 @@ export const QuestionInput = ({ onSend, disabled, placeholder, clearOnSend, conv
           </label>
         </div>)}
       {base64Image && <img className={styles.uploadedImage} src={base64Image} alt="Uploaded Preview" />}
+      <div className={styles.questionInputSendButtonContainer}>
+        <MicButton onTranscript={(text, append) => {setQuestion(prev => append ? prev + (prev ? ' ' : '') + text : text)}} />
       <div
-        className={styles.questionInputSendButtonContainer}
         role="button"
         tabIndex={0}
         aria-label="Ask question button"
@@ -119,7 +120,7 @@ export const QuestionInput = ({ onSend, disabled, placeholder, clearOnSend, conv
           <img src={Send} className={styles.questionInputSendButton} alt="Send Button" />
         )}
       </div>
-       <MicButton onTranscript={(text) => setQuestion(prev => prev + (prev ? ' ' : '') + text)} />
+    </div>
       <div className={styles.questionInputBottomBorder} />
     </Stack>
   )
