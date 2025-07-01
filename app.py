@@ -1,3 +1,11 @@
+import logging
+#setup logging
+logging.basicConfig(
+    filename="app.log",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    filemode="a" #append to the file if it exists
+)
 import copy
 import json
 import os
@@ -5,6 +13,8 @@ import logging
 import uuid
 import httpx
 import asyncio
+import uuid
+import time
 from quart import (
     Blueprint,
     Quart,
@@ -38,6 +48,7 @@ from backend.utils import (
 import tempfile
 import azure.cognitiveservices.speech as speechsdk
 import ffmpeg
+
 
 SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY")
 SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
@@ -75,8 +86,11 @@ async def index():
 
 @bp.route("/transcribe", methods=["POST"])
 async def transcribe():
+    start_time = time.time()
+    logging.info("Transcription request received")
     #read raw audio bytes
     data = await request.data
+    logging.info("Raw audio data received, writing to temp file")
     # write to a temp file
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         tmp.write(data)
@@ -84,9 +98,10 @@ async def transcribe():
         wav_path = tempfile.mktemp(suffix=".wav")
     try:
         ffmpeg.input(webm_path).output(wav_path).run()
+        logging.info("FFmpeg conversion to wav successful")
 
     except Exception as e:
-        print("❌ FFmpeg conversion failed:", e)
+        logging.error("FFmpeg conversion failed: %s", e)
         return jsonify({"text": "", "error": "ffmpeg conversion failed"}), 500
 
 
@@ -97,20 +112,23 @@ async def transcribe():
     langs = ["de-DE", "en-US", "tr-TR", "es-ES"]
     auto_lang = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(langs)
 
-    #3s silence timeout
+    #silence timeout
     speech_config.set_property(
         speechsdk.PropertyId.Speech_SegmentationSilenceTimeoutMs,"1500" #normnally 3 seconds
     )
     audio_input = speechsdk.audio.AudioConfig(filename=wav_path)
     recognizer = speechsdk.SpeechRecognizer(
-        speech_config=speech_config, #3s silence rule
+        speech_config=speech_config, # silence rule
         auto_detect_source_language_config=auto_lang, #langs
         audio_config=audio_input 
     )
-    #stops on first pause
+
     result = recognizer.recognize_once()
-    print("🗣️  Recognizer result.reason:", result.reason)
-    print("🗣️  Recognized text:", repr(result.text))
+    logging.info(f"Recognized text: {result.text}")
+
+    end_time = time.time()
+    logging.info(f"Transcription completed in {end_time - start_time} seconds")
+
     text = result.text if result.reason == speechsdk.ResultReason.RecognizedSpeech else ""
     return jsonify({"text": text})
 
