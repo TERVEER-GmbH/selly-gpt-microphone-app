@@ -57,7 +57,7 @@ export function MicButton({ onTranscript }: MicButtonProps) {
           if (!silenceTimer.current) {
             silenceTimer.current = window.setTimeout(() => {
               stopListening()
-            }, 1500)
+            }, 4000) //after 4 seconds of silence the mic will be stopped
           }
         } else {
           if (silenceTimer.current) {

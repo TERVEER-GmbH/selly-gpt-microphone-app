@@ -114,7 +114,7 @@ async def transcribe():
 
     #silence timeout
     speech_config.set_property(
-        speechsdk.PropertyId.Speech_SegmentationSilenceTimeoutMs,"1500" #normnally 3 seconds
+        speechsdk.PropertyId.Speech_SegmentationSilenceTimeoutMs,"4000" #normnally 3 seconds
     )
     audio_input = speechsdk.audio.AudioConfig(filename=wav_path)
     recognizer = speechsdk.SpeechRecognizer(
