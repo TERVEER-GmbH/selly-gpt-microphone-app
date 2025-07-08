@@ -6,6 +6,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     filemode="a" #append to the file if it exists
 )
+import threading
 import copy
 import json
 import os
@@ -88,45 +89,60 @@ async def index():
 async def transcribe():
     start_time = time.time()
     logging.info("Transcription request received")
-    #read raw audio bytes
-    data = await request.data
-    logging.info("Raw audio data received, writing to temp file")
-    # write to a temp file
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp.write(data)
-        webm_path = tmp.name
-        wav_path = tempfile.mktemp(suffix=".wav")
-    try:
-        ffmpeg.input(webm_path).output(wav_path).run()
-        logging.info("FFmpeg conversion to wav successful")
 
+    # 1) Write incoming bytes to temp WebM, convert to WAV
+    data = await request.data
+    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as in_tmp:
+        in_tmp.write(data)
+        webm_path = in_tmp.name
+    wav_path = tempfile.mktemp(suffix=".wav")
+
+    try:
+        ffmpeg.input(webm_path).output(wav_path).run(quiet=True)
+        logging.info("FFmpeg conversion to wav successful")
     except Exception as e:
-        logging.error("FFmpeg conversion failed: %s", e)
+        logging.error(f"FFmpeg conversion failed: {e}")
         return jsonify({"text": "", "error": "ffmpeg conversion failed"}), 500
 
-
-    #configure speech SDK
+    # 2) Configure speech SDK
     speech_config = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
-
-    #languages to auto-detect
     langs = ["de-DE", "en-US", "tr-TR", "es-ES"]
     auto_lang = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(langs)
-
-
     audio_input = speechsdk.audio.AudioConfig(filename=wav_path)
     recognizer = speechsdk.SpeechRecognizer(
-        speech_config=speech_config, 
-        auto_detect_source_language_config=auto_lang, #langs
-        audio_config=audio_input 
+        speech_config=speech_config,
+        auto_detect_source_language_config=auto_lang,
+        audio_config=audio_input
     )
 
-    result = recognizer.recognize_once()
-    logging.info(f"Recognized text: {result.text}")
+    # 3) Prepare to collect recognized text
+    all_text = []
+    def recognized_cb(evt):
+        if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
+            all_text.append(evt.result.text)
+
+    # 4) Prepare an event to know when recognition is done
+    done = threading.Event()
+    def stop_cb(evt):
+        done.set()
+
+    # 5) Wire up the events
+    recognizer.recognized.connect(recognized_cb)
+    recognizer.session_stopped.connect(stop_cb)
+    recognizer.canceled.connect(stop_cb)
+
+    # 6) Start, wait, then stop
+    recognizer.start_continuous_recognition()
+    done.wait()  # BLOCK until session_stopped or canceled fires
+    recognizer.stop_continuous_recognition()
+
+    logging.info(f"Recognized text segments: {all_text}")
 
     end_time = time.time()
-    logging.info(f"Transcription completed in {end_time - start_time} seconds")
+    logging.info(f"Transcription completed in {end_time - start_time:.2f} seconds")
 
-    text = result.text if result.reason == speechsdk.ResultReason.RecognizedSpeech else ""
+    # 7) Return joined transcript
+    text = " ".join(all_text).strip()
     return jsonify({"text": text})
 
 @bp.route("/favicon.ico")

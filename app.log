@@ -1,16 +1,44 @@
-2025-07-08 12:19:22,698 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
-2025-07-08 12:19:33,981 - INFO - Transcription request received
-2025-07-08 12:19:33,982 - INFO - Raw audio data received, writing to temp file
-2025-07-08 12:19:34,117 - INFO - FFmpeg conversion to wav successful
-2025-07-08 12:19:35,544 - INFO - Recognized text: Merhaba sesim duyuluyor mu?
-2025-07-08 12:19:35,545 - INFO - Transcription completed in 1.5633580684661865 seconds
-2025-07-08 12:19:46,008 - INFO - Transcription request received
-2025-07-08 12:19:46,008 - INFO - Raw audio data received, writing to temp file
-2025-07-08 12:19:46,072 - INFO - FFmpeg conversion to wav successful
-2025-07-08 12:19:47,385 - INFO - Recognized text: Hallo, kannst du mich verstehen?
-2025-07-08 12:19:47,385 - INFO - Transcription completed in 1.3772540092468262 seconds
-2025-07-08 12:19:53,341 - INFO - Transcription request received
-2025-07-08 12:19:53,341 - INFO - Raw audio data received, writing to temp file
-2025-07-08 12:19:53,398 - INFO - FFmpeg conversion to wav successful
-2025-07-08 12:19:54,603 - INFO - Recognized text: Sehr gut.
-2025-07-08 12:19:54,604 - INFO - Transcription completed in 1.26292085647583 seconds
+2025-07-08 15:11:56,537 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-08 15:12:09,445 - INFO - Transcription request received
+2025-07-08 15:12:09,446 - INFO - Raw audio data received, writing to temp file
+2025-07-08 15:12:09,774 - INFO - FFmpeg conversion to wav successful
+2025-07-08 15:12:10,310 - INFO - Recognized text segments: []
+2025-07-08 15:12:10,311 - INFO - Transcription completed in 0.8655650615692139 seconds
+2025-07-08 15:23:45,273 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-08 15:24:09,194 - INFO - Transcription request received
+2025-07-08 15:24:09,337 - INFO - FFmpeg conversion to wav successful
+2025-07-08 15:24:09,341 - ERROR - Exception on request POST /transcribe
+Traceback (most recent call last):
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/quart/app.py", line 1404, in handle_request
+    return await self.full_dispatch_request(request_context)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/quart/app.py", line 1442, in full_dispatch_request
+    result = await self.handle_user_exception(error)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/quart/app.py", line 1030, in handle_user_exception
+    raise error
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/quart/app.py", line 1440, in full_dispatch_request
+    result = await self.dispatch_request(request_context)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/quart/app.py", line 1536, in dispatch_request
+    return await self.ensure_async(handler)(**request_.view_args)  # type: ignore
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 124, in transcribe
+    done = threading.Event()
+           ^^^^^^^^^
+NameError: name 'threading' is not defined. Did you forget to import 'threading'
+2025-07-08 15:24:30,358 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-08 15:24:46,401 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-08 15:25:16,818 - INFO - Transcription request received
+2025-07-08 15:25:16,969 - INFO - FFmpeg conversion to wav successful
+2025-07-08 15:25:19,977 - INFO - Recognized text segments: ['Yeah, yeah.']
+2025-07-08 15:25:19,977 - INFO - Transcription completed in 3.16 seconds
+2025-07-08 15:30:01,140 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-08 15:30:19,708 - INFO - Transcription request received
+2025-07-08 15:30:19,853 - INFO - FFmpeg conversion to wav successful
+2025-07-08 15:30:24,815 - INFO - Recognized text segments: ['OK.', 'OK.']
+2025-07-08 15:30:24,815 - INFO - Transcription completed in 5.11 seconds
+2025-07-08 15:45:16,401 - INFO - Transcription request received
+2025-07-08 15:45:16,553 - INFO - FFmpeg conversion to wav successful
+2025-07-08 15:45:18,731 - INFO - Recognized text segments: ['Ich denke ja es es. Es dauert ein bisschen.']
+2025-07-08 15:45:18,732 - INFO - Transcription completed in 2.33 seconds
