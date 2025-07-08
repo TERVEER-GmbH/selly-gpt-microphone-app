@@ -112,13 +112,10 @@ async def transcribe():
     langs = ["de-DE", "en-US", "tr-TR", "es-ES"]
     auto_lang = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(langs)
 
-    #silence timeout
-    speech_config.set_property(
-        speechsdk.PropertyId.Speech_SegmentationSilenceTimeoutMs,"4000" #normnally 3 seconds
-    )
+
     audio_input = speechsdk.audio.AudioConfig(filename=wav_path)
     recognizer = speechsdk.SpeechRecognizer(
-        speech_config=speech_config, # silence rule
+        speech_config=speech_config, 
         auto_detect_source_language_config=auto_lang, #langs
         audio_config=audio_input 
     )

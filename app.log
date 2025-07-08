@@ -1,21 +1,16 @@
-2025-07-07 15:29:14,900 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
-2025-07-07 15:29:22,884 - INFO - Transcription request received
-2025-07-07 15:29:22,885 - INFO - Raw audio data received, writing to temp file
-2025-07-07 15:29:23,371 - INFO - FFmpeg conversion to wav successful
-2025-07-07 15:29:25,025 - INFO - Recognized text: Versuch 12.
-2025-07-07 15:29:25,025 - INFO - Transcription completed in 2.141004800796509 seconds
-2025-07-07 15:29:33,461 - INFO - Transcription request received
-2025-07-07 15:29:33,462 - INFO - Raw audio data received, writing to temp file
-2025-07-07 15:29:33,522 - INFO - FFmpeg conversion to wav successful
-2025-07-07 15:29:35,059 - INFO - Recognized text: Versuch 123.
-2025-07-07 15:29:35,059 - INFO - Transcription completed in 1.5977728366851807 seconds
-2025-07-07 15:29:44,454 - INFO - Transcription request received
-2025-07-07 15:29:44,454 - INFO - Raw audio data received, writing to temp file
-2025-07-07 15:29:44,514 - INFO - FFmpeg conversion to wav successful
-2025-07-07 15:29:46,155 - INFO - Recognized text: Also 12345.
-2025-07-07 15:29:46,155 - INFO - Transcription completed in 1.700850009918213 seconds
-2025-07-07 15:29:53,350 - INFO - Transcription request received
-2025-07-07 15:29:53,350 - INFO - Raw audio data received, writing to temp file
-2025-07-07 15:29:53,408 - INFO - FFmpeg conversion to wav successful
-2025-07-07 15:29:53,995 - INFO - Recognized text: 
-2025-07-07 15:29:53,995 - INFO - Transcription completed in 0.6448180675506592 seconds
+2025-07-08 12:19:22,698 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-08 12:19:33,981 - INFO - Transcription request received
+2025-07-08 12:19:33,982 - INFO - Raw audio data received, writing to temp file
+2025-07-08 12:19:34,117 - INFO - FFmpeg conversion to wav successful
+2025-07-08 12:19:35,544 - INFO - Recognized text: Merhaba sesim duyuluyor mu?
+2025-07-08 12:19:35,545 - INFO - Transcription completed in 1.5633580684661865 seconds
+2025-07-08 12:19:46,008 - INFO - Transcription request received
+2025-07-08 12:19:46,008 - INFO - Raw audio data received, writing to temp file
+2025-07-08 12:19:46,072 - INFO - FFmpeg conversion to wav successful
+2025-07-08 12:19:47,385 - INFO - Recognized text: Hallo, kannst du mich verstehen?
+2025-07-08 12:19:47,385 - INFO - Transcription completed in 1.3772540092468262 seconds
+2025-07-08 12:19:53,341 - INFO - Transcription request received
+2025-07-08 12:19:53,341 - INFO - Raw audio data received, writing to temp file
+2025-07-08 12:19:53,398 - INFO - FFmpeg conversion to wav successful
+2025-07-08 12:19:54,603 - INFO - Recognized text: Sehr gut.
+2025-07-08 12:19:54,604 - INFO - Transcription completed in 1.26292085647583 seconds
