@@ -7,6 +7,7 @@ logging.basicConfig(
     filemode="a" #append to the file if it exists
 )
 import threading
+import io
 import copy
 import json
 import os
@@ -90,50 +91,70 @@ async def transcribe():
     start_time = time.time()
     logging.info("Transcription request received")
 
-    # 1) Write incoming bytes to temp WebM, convert to WAV
-    data = await request.data
-    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as in_tmp:
-        in_tmp.write(data)
-        webm_path = in_tmp.name
-    wav_path = tempfile.mktemp(suffix=".wav")
+    #read the raw WebM bytes
+    webm_data = await request.data
 
+    #transcode to WAV-in memory
     try:
-        ffmpeg.input(webm_path).output(wav_path).run(quiet=True)
+        proc = (
+            ffmpeg
+            .input("pipe:0") #pipe:0 tells FFmpeg to read its input from its standard-input (stdin)
+            .output("pipe:1", #pipe:1 tells FFmpeg to read its input from its standard-output (stdout)
+                    format="s16le", 
+                    acodec="pcm_s16le",
+                    ac=1, #mono
+                    ar="16000") #16 kHz
+            .run_async(pipe_stdin=True, pipe_stdout=True, pipe_stderr=True)
+        )    
+        wav_bytes, ff_er = proc.communicate(input=webm_data)
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg error: {ff_er.decode().strip()}")
         logging.info("FFmpeg conversion to wav successful")
     except Exception as e:
-        logging.error(f"FFmpeg conversion failed: {e}")
+        logging.error(f"FFmpeg conversion failed {e}")
         return jsonify({"text": "", "error": "ffmpeg conversion failed"}), 500
 
-    # 2) Configure speech SDK
+    # Configure speech SDK
     speech_config = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
     langs = ["de-DE", "en-US", "tr-TR", "es-ES"]
     auto_lang = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(langs)
-    audio_input = speechsdk.audio.AudioConfig(filename=wav_path)
+    
+
+    #creating a push stream and feeding WAV bytes
+    push_stream = speechsdk.audio.PushAudioInputStream() #push_stream object lives entirely in memory
+    push_stream.write(wav_bytes)
+    push_stream.close()
+
+
+    audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
     recognizer = speechsdk.SpeechRecognizer(
         speech_config=speech_config,
         auto_detect_source_language_config=auto_lang,
-        audio_config=audio_input
+        audio_config=audio_config
     )
 
-    # 3) Prepare to collect recognized text
+
+    # Prepare to collect recognized text
     all_text = []
     def recognized_cb(evt):
         if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
             all_text.append(evt.result.text)
+            done.set() #unblock immediately on first transcript and wake up the wait
 
-    # 4) Prepare an event to know when recognition is done
+    # Prepare an event to know when recognition is done
     done = threading.Event()
-    def stop_cb(evt):
-        done.set()
 
-    # 5) Wire up the events
+    def stop_cb(evt):
+        done.set() #safety: wake up wait() f recognition never happened
+
+    # Wire up the events
     recognizer.recognized.connect(recognized_cb)
     recognizer.session_stopped.connect(stop_cb)
     recognizer.canceled.connect(stop_cb)
 
-    # 6) Start, wait, then stop
+    # Start, wait, then stop
     recognizer.start_continuous_recognition()
-    done.wait()  # BLOCK until session_stopped or canceled fires
+    done.wait()  # done is a threading.event which starts as False. In our stop_cb blocks the main thread until the flag becomes True
     recognizer.stop_continuous_recognition()
 
     logging.info(f"Recognized text segments: {all_text}")
