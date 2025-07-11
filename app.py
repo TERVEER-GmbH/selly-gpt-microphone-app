@@ -116,7 +116,7 @@ async def transcribe():
 
     # Configure speech SDK
     speech_config = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
-    langs = ["de-DE", "en-US", "tr-TR", "es-ES"]
+    langs = ["de-DE", "en-US", "tr-TR", "ru-RU", "pl-PL", "it-IT", "fr-FR", "nl-NL", "cs-CZ" ,"es-ES", "da-DK"]
     auto_lang = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(langs)
     
 
