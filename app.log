@@ -24,3 +24,8 @@
 2025-07-11 13:11:01,643 - INFO - FFmpeg conversion to wav successful
 2025-07-11 13:11:03,499 - INFO - Recognized text segments: ['Wir sollen dann warten, maximal 2 Sekunden.']
 2025-07-11 13:11:03,499 - INFO - Transcription completed in 1.91 seconds
+2025-07-11 14:33:55,441 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-11 14:34:03,983 - INFO - Transcription request received
+2025-07-11 14:34:04,114 - INFO - FFmpeg conversion to wav successful
+2025-07-11 14:34:06,838 - INFO - Recognized text segments: ['Auch das Zuliefererbaby.']
+2025-07-11 14:34:06,839 - INFO - Transcription completed in 2.86 seconds
