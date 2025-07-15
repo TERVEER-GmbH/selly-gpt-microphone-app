@@ -9,106 +9,130 @@ export interface MicButtonProps {
 
 export function MicButton({ onTranscript }: MicButtonProps) {
   const [listening, setListening] = useState(false)
+  const [transcribing, setTranscribing] = useState(false)
+  const [elapsed, setElapsed] = useState(0)
+
   const mediaRecorder = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<BlobPart[]>([])
   const sendOnStop = useRef(false)
+  const timerIdRef = useRef<number | null>(null)
 
-  // Cleanup on unmount or when listening state changes
+  // Cleanup on unmount
   useEffect(() => {
+    return () => stopAll()
+  }, [])
+
+  // Timer effect
+  useEffect(() => {
+    if (listening) {
+      setElapsed(0)
+      timerIdRef.current = window.setInterval(() => setElapsed(sec => sec + 1), 1000)
+    }
     return () => {
-      if (listening) {
-        cancelListening()
+      if (timerIdRef.current) {
+        clearInterval(timerIdRef.current)
+        timerIdRef.current = null
       }
     }
   }, [listening])
 
-  async function startListening() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  function startListening() {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
       streamRef.current = stream
 
       const recorder = new MediaRecorder(stream)
       mediaRecorder.current = recorder
       chunksRef.current = []
 
-      recorder.ondataavailable = (ev) => chunksRef.current.push(ev.data)
+      recorder.ondataavailable = ev => chunksRef.current.push(ev.data)
       recorder.onstop = async () => {
-        // Stop and release media tracks
-        streamRef.current?.getTracks().forEach(track => track.stop())
-        setListening(false)
-
+        stopAll()
         if (sendOnStop.current) {
           const blob = new Blob(chunksRef.current, { type: 'audio/webm;codecs=opus' })
+          setTranscribing(true)
           try {
             const res = await fetch('/transcribe', { method: 'POST', body: blob })
             const data = await res.json()
             onTranscript(data.text, true)
           } catch (e) {
             console.error('❌ Mic: error sending blob', e)
+          } finally {
+            setTranscribing(false)
           }
         }
       }
 
       recorder.start()
       setListening(true)
-    } catch (err) {
-      console.error('❌ Could not access microphone:', err)
+    }).catch(err => {
+      console.error('❌ Mic access error', err)
       alert('Please allow microphone access.')
-    }
+    })
   }
 
   function confirmListening() {
     sendOnStop.current = true
-    if (mediaRecorder.current && mediaRecorder.current.state === 'recording') {
-      mediaRecorder.current.stop()
-    }
+    mediaRecorder.current?.stop()
   }
 
   function cancelListening() {
     sendOnStop.current = false
-    if (mediaRecorder.current && mediaRecorder.current.state === 'recording') {
-      mediaRecorder.current.stop()
-    }
-    streamRef.current?.getTracks().forEach(track => track.stop())
-    setListening(false)
+    mediaRecorder.current?.stop()
+    stopAll()
   }
 
-  function handleClick() {
-    if (!listening) {
-      startListening()
+  function stopAll() {
+    setListening(false)
+    setTranscribing(false)
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    if (timerIdRef.current) {
+      clearInterval(timerIdRef.current)
+      timerIdRef.current = null
     }
+  }
+
+  function formatTime(sec: number) {
+    const m = Math.floor(sec / 60)
+    const s = sec % 60
+    return `${m}:${s.toString().padStart(2, '0')}`
   }
 
   return (
-    <div style={{ marginLeft: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
-      { !listening ? (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {!listening && !transcribing && (
         <button
-          onClick={handleClick}
-          style={{
-            cursor: 'pointer',
-            background: 'none',
-            border: 'none',
-            padding: '0 6px',
-            display: 'flex',
-            alignItems: 'center',
-            height: '100%'
-          }}
+          onClick={startListening}
           aria-label="Start Recording"
+          style={{ background: 'none', border: 'none', cursor: 'pointer' }}
         >
-          <img src={MicIcon} alt="MicIcon" style={{ width: 24, height: 24 }} />
+          <img src={MicIcon} alt="Start" width={24} height={24} />
         </button>
-      ) : (
+      )}
+
+      {listening && !transcribing && (
         <>
-          <button onClick={confirmListening} aria-label="Confirm Recording" style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}>
-            <img src={CheckIcon} alt="ConfirmIcon" style={{ width: 24, height: 24 }} />
+          <button
+            onClick={cancelListening}
+            aria-label="Cancel Recording"
+            style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+          >
+            <img src={CrossIcon} alt="Cancel" width={24} height={24} />
           </button>
-          <button onClick={cancelListening} aria-label="Cancel Recording" style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}>
-            <img src={CrossIcon} alt="CancelIcon" style={{ width: 24, height: 24 }} />
+          <span style={{ fontFamily: 'monospace', fontSize: 14 }}>{formatTime(elapsed)}</span>
+          <button
+            onClick={confirmListening}
+            aria-label="Confirm Recording"
+            style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+          >
+            <img src={CheckIcon} alt="Confirm" width={24} height={24} />
           </button>
-          <span style={{ fontWeight: 'bold', color: 'red' }}>Listening...</span>
         </>
-      ) }
+      )}
+
+      {transcribing && (
+        <span style={{ fontStyle: 'italic', color: '#555' }}>Transcribing...</span>
+      )}
     </div>
   )
 }
