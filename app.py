@@ -86,85 +86,100 @@ async def index():
         favicon=app_settings.ui.favicon
     )
 
+
+# Callback that feeds our in-memory PCM to the SDK on demand
+class MemoryPCMCallback(speechsdk.audio.PullAudioInputStreamCallback):
+    def __init__(self, pcm_bytes: bytes):
+        super().__init__()
+        self._buf = io.BytesIO(pcm_bytes)
+    def read(self, buffer: memoryview) -> int:
+        chunk = self._buf.read(buffer.nbytes)
+        if not chunk:
+            return 0
+        buffer[:len(chunk)] = chunk
+        return len(chunk)
+    def close(self) -> None:
+        self._buf.close()
+        super().close()
+
 @bp.route("/transcribe", methods=["POST"])
 async def transcribe():
-    start_time = time.time()
+    start_t = time.time()
     logging.info("Transcription request received")
 
-    #read the raw WebM bytes
-    webm_data = await request.data
+    webm = await request.data
 
-    #transcode to WAV-in memory
+    #FFmpeg: WebM → raw PCM (16 kHz, 16 bit, mono) in memory
     try:
         proc = (
-            ffmpeg
-            .input("pipe:0") #pipe:0 tells FFmpeg to read its input from its standard-input (stdin)
-            .output("pipe:1", #pipe:1 tells FFmpeg to read its input from its standard-output (stdout)
-                    format="s16le", 
-                    acodec="pcm_s16le",
-                    ac=1, #mono
-                    ar="16000") #16 kHz
-            .run_async(pipe_stdin=True, pipe_stdout=True, pipe_stderr=True)
-        )    
-        wav_bytes, ff_er = proc.communicate(input=webm_data)
-        if proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg error: {ff_er.decode().strip()}")
-        logging.info("FFmpeg conversion to wav successful")
+            ffmpeg.input("pipe:0")
+                  .output("pipe:1",
+                          format="s16le",
+                          acodec="pcm_s16le",
+                          ac=1, ar="16000")
+                  .run_async(pipe_stdin=True, pipe_stdout=True,
+                             pipe_stderr=True)
+        )
+        pcm_bytes, err = proc.communicate(input=webm)
+        if proc.returncode:
+            raise RuntimeError(err.decode().strip())
+        logging.info("FFmpeg → PCM successful")
     except Exception as e:
-        logging.error(f"FFmpeg conversion failed {e}")
+        logging.error("FFmpeg conversion failed: %s", e)
         return jsonify({"text": "", "error": "ffmpeg conversion failed"}), 500
 
-    # Configure speech SDK
-    speech_config = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
-    langs = ["de-DE", "en-US", "tr-TR", "ru-RU", "pl-PL", "it-IT", "fr-FR", "nl-NL", "cs-CZ" ,"es-ES", "da-DK"]
+    #Configure Speech SDK with in-memory pull stream
+    speech_config = speechsdk.SpeechConfig(
+        subscription=SPEECH_KEY, region=SPEECH_REGION
+    )
+    langs = ["de-DE", "en-US", "tr-TR", "ru-RU", "pl-PL", "it-IT", "fr-FR", "nl-NL", "cs-CZ" ,"es-ES"]
     auto_lang = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(langs)
+    #enable Continuous LID mode
+    speech_config.set_property(
+        property_id=speechsdk.PropertyId.SpeechServiceConnection_LanguageIdMode, value='Continuous'
+        )
     
 
-    #creating a push stream and feeding WAV bytes
-    push_stream = speechsdk.audio.PushAudioInputStream() #push_stream object lives entirely in memory
-    push_stream.write(wav_bytes)
-    push_stream.close()
+    fmt        = speechsdk.audio.AudioStreamFormat(
+                     samples_per_second=16000,
+                     bits_per_sample=16,
+                     channels=1
+                 )
+    pull_cb    = MemoryPCMCallback(pcm_bytes)
+    pull_stream= speechsdk.audio.PullAudioInputStream(pull_cb, fmt)
+    audio_cfg  = speechsdk.audio.AudioConfig(stream=pull_stream)
 
-
-    audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
     recognizer = speechsdk.SpeechRecognizer(
         speech_config=speech_config,
         auto_detect_source_language_config=auto_lang,
-        audio_config=audio_config
+        audio_config=audio_cfg
     )
 
-
-    # Prepare to collect recognized text
+    #Collect all segments (even after silence)
     all_text = []
-    def recognized_cb(evt):
+    done = threading.Event() #The done object is a simple way to pause the code until SDK is finished with audio stream. done intially holds the flag set to False
+
+    def on_rec(evt):
         if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
             all_text.append(evt.result.text)
-            done.set() #unblock immediately on first transcript and wake up the wait
 
-    # Prepare an event to know when recognition is done
-    done = threading.Event()
+    def on_stop(evt):
+        done.set() #now the flag is set , continue
 
-    def stop_cb(evt):
-        done.set() #safety: wake up wait() f recognition never happened
+    #whenever the recognizer reaches the end of the audio (error/cancel), it fires either session_stopped or canceled. In our handler on_stop, we call done.set()
+    #which flips the internal flag from False to True
+    recognizer.recognized.connect(on_rec)
+    recognizer.session_stopped.connect(on_stop)
+    recognizer.canceled.connect(on_stop)
 
-    # Wire up the events
-    recognizer.recognized.connect(recognized_cb)
-    recognizer.session_stopped.connect(stop_cb)
-    recognizer.canceled.connect(stop_cb)
-
-    # Start, wait, then stop
+    #Run continuous → wait for end-of-stream → stop
     recognizer.start_continuous_recognition()
-    done.wait()  # done is a threading.event which starts as False. In our stop_cb blocks the main thread until the flag becomes True
+    done.wait() #pause here until the flag is True 
     recognizer.stop_continuous_recognition()
 
-    logging.info(f"Recognized text segments: {all_text}")
-
-    end_time = time.time()
-    logging.info(f"Transcription completed in {end_time - start_time:.2f} seconds")
-
-    # 7) Return joined transcript
-    text = " ".join(all_text).strip()
-    return jsonify({"text": text})
+    transcript = " ".join(all_text).strip()
+    logging.info(f"Transcription done in {time.time()-start_t:.2f}s: {transcript!r}")
+    return jsonify({"text": transcript})
 
 @bp.route("/favicon.ico")
 async def favicon():
