@@ -87,27 +87,29 @@ async def index():
     )
 
 
-# Callback that feeds our in-memory PCM to the SDK on demand
+# the SDK will call our methods whenever it needs more audio samples
 class MemoryPCMCallback(speechsdk.audio.PullAudioInputStreamCallback):
     def __init__(self, pcm_bytes: bytes):
         super().__init__()
-        self._buf = io.BytesIO(pcm_bytes)
+        self._buf = io.BytesIO(pcm_bytes) #we take the full PCM data (a bytes object) and wrap it in a BytesIO, which behaves like a file in memory
     def read(self, buffer: memoryview) -> int:
         chunk = self._buf.read(buffer.nbytes)
         if not chunk:
-            return 0
-        buffer[:len(chunk)] = chunk
+            return 0    #end of chunk
+        buffer[:len(chunk)] = chunk #fill SDK's buffer
         return len(chunk)
     def close(self) -> None:
-        self._buf.close()
+        self._buf.close() #when the SDK is done with the stream, it calls close()
         super().close()
+
+#MicButton uses MediaRecorder to grab raw microphone samples, it packages them inti a small WebM file and hands us a Blob
 
 @bp.route("/transcribe", methods=["POST"])
 async def transcribe():
     start_t = time.time()
     logging.info("Transcription request received")
 
-    webm = await request.data
+    webm = await request.data #quart endpoint reads the blob(webm) and now we have the compressed audio bytes in memory
 
     #FFmpeg: WebM → raw PCM (16 kHz, 16 bit, mono) in memory
     try:
@@ -139,15 +141,16 @@ async def transcribe():
         property_id=speechsdk.PropertyId.SpeechServiceConnection_LanguageIdMode, value='Continuous'
         )
     
-
-    fmt        = speechsdk.audio.AudioStreamFormat(
-                     samples_per_second=16000,
-                     bits_per_sample=16,
-                     channels=1
-                 )
-    pull_cb    = MemoryPCMCallback(pcm_bytes)
-    pull_stream= speechsdk.audio.PullAudioInputStream(pull_cb, fmt)
-    audio_cfg  = speechsdk.audio.AudioConfig(stream=pull_stream)
+    fmt = speechsdk.audio.AudioStreamFormat(
+        samples_per_second=16000,
+        bits_per_sample=16,
+        channels=1
+        )
+    
+    #getting the converted audio...
+    pull_cb    = MemoryPCMCallback(pcm_bytes) #instance of callback class
+    pull_stream= speechsdk.audio.PullAudioInputStream(pull_cb, fmt) #it will call pull_cb.read() to fetch exactly the right number of bytes whenever the recognizer asks for audio
+    audio_cfg  = speechsdk.audio.AudioConfig(stream=pull_stream) # we package the pull-stream into an AudioConfig, which is how the Speech SDK learns where to get its audio from
 
     recognizer = speechsdk.SpeechRecognizer(
         speech_config=speech_config,
