@@ -138,7 +138,7 @@ async def transcribe():
     auto_lang = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(langs)
     #enable Continuous LID mode
     speech_config.set_property(
-        property_id=speechsdk.PropertyId.SpeechServiceConnection_LanguageIdMode, value='Continuous'
+        property_id=speechsdk.PropertyId.SpeechServiceConnection_LanguageIdMode, value='Continuous' #without it we won't be able to add 10 langs
         )
     
     fmt = speechsdk.audio.AudioStreamFormat(
@@ -163,13 +163,13 @@ async def transcribe():
     done = threading.Event() #The done object is a simple way to pause the code until SDK is finished with audio stream. done intially holds the flag set to False
 
     def on_rec(evt):
-        if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
+        if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech: #if a speech is recognized
             all_text.append(evt.result.text)
 
     def on_stop(evt):
         done.set() #now the flag is set , continue
 
-    #first recognized.connect starts and the flag starts as False, and then continuous_recognition starts and the code pauses by done.wait() till the Flag turns to True,
+    #first recognized.connect starts , and then continuous_recognition starts and the code pauses by done.wait() till the Flag turns to True,
     #when the session_stopped (after clicking complete button) or canceled (after complete cross button) the Flag turns True and then we call stop_continous_recognititon()
     recognizer.recognized.connect(on_rec) 
     recognizer.session_stopped.connect(on_stop)
