@@ -102,7 +102,7 @@ class MemoryPCMCallback(speechsdk.audio.PullAudioInputStreamCallback):
         self._buf.close() #when the SDK is done with the stream, it calls close()
         super().close()
 
-#MicButton uses MediaRecorder to grab raw microphone samples, it packages them inti a small WebM file and hands us a Blob
+#MicButton uses MediaRecorder to grab raw microphone samples, it packages them into a small WebM file and hands us a Blob
 
 @bp.route("/transcribe", methods=["POST"])
 async def transcribe():
@@ -169,9 +169,9 @@ async def transcribe():
     def on_stop(evt):
         done.set() #now the flag is set , continue
 
-    #whenever the recognizer reaches the end of the audio (error/cancel), it fires either session_stopped or canceled. In our handler on_stop, we call done.set()
-    #which flips the internal flag from False to True
-    recognizer.recognized.connect(on_rec)
+    #first recognized.connect starts and the flag starts as False, and then continuous_recognition starts and the code pauses by done.wait() till the Flag turns to True,
+    #when the session_stopped (after clicking complete button) or canceled (after complete cross button) the Flag turns True and then we call stop_continous_recognititon()
+    recognizer.recognized.connect(on_rec) 
     recognizer.session_stopped.connect(on_stop)
     recognizer.canceled.connect(on_stop)
 
