@@ -1,0 +1,6 @@
+2025-07-18 10:38:36,795 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-18 10:39:02,051 - INFO - Transcription request received
+2025-07-18 10:39:02,369 - INFO - FFmpeg → PCM successful
+2025-07-18 10:39:07,211 - INFO - Transcription done in 5.16s: 'Ja, wenn ich auf Mikro Taste drücke. Dann seh ich ein seh ich eigentlich ein Timer mit abhaken Kreuz und. Wenn ich da abhaken drück.'
+2025-07-18 10:39:54,388 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-18 10:39:56,820 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)

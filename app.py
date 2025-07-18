@@ -134,7 +134,7 @@ async def transcribe():
     speech_config = speechsdk.SpeechConfig(
         subscription=SPEECH_KEY, region=SPEECH_REGION
     )
-    langs = ["de-DE", "en-US", "tr-TR", "ru-RU", "pl-PL", "it-IT", "fr-FR", "nl-NL", "cs-CZ" ,"es-ES"]
+    langs = ["de-DE", "en-US", "tr-TR", "ru-RU", "pl-PL", "it-IT", "fr-FR", "uk-UA", "cs-CZ" ,"es-ES"]  
     auto_lang = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(langs)
     #enable Continuous LID mode
     speech_config.set_property(
