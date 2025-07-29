@@ -14,3 +14,4 @@ azure-storage-blob
 chardet
 azure-keyvault-secrets
 coverage
+pandas

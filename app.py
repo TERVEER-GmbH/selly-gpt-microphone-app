@@ -26,6 +26,7 @@ from quart import (
     send_from_directory,
     render_template,
     current_app,
+    send_file
 )
 
 from openai import AsyncAzureOpenAI
@@ -50,10 +51,22 @@ from backend.utils import (
 import tempfile
 import azure.cognitiveservices.speech as speechsdk
 import ffmpeg
+import csv
+from azure.storage.blob.aio import BlobServiceClient
+import pandas as pd
+import zipfile
 
 
+
+
+#for speech
 SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY")
 SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
+#for storage
+AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+AZURE_RESULTS_CONTAINER = os.getenv("AZURE_RESULTS_CONTAINER")
+AZURE_RESULTS_BLOB_NAME = os.getenv("AZURE_RESULTS_BLOB_NAME")
+
 
 bp = Blueprint("routes", __name__, static_folder="static", template_folder="static")
 
@@ -192,6 +205,72 @@ async def favicon():
 @bp.route("/assets/<path:path>")
 async def assets(path):
     return await send_from_directory("static/assets", path)
+
+@bp.route("/evaluate", methods=["POST"])
+async def evaluate():
+    file_path = os.path.join(os.path.dirname(__file__), "sample_prompts.csv")
+    result_rows = []
+
+    try:
+        with open(file_path, newline='', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                question = row['Question']
+                expected_answer = row['ExpectedAnswer']
+
+                request_body = {
+                    "messages": [{
+                        "role": "user",
+                        "content": question
+                    }]
+                }
+                max_retries = 5
+                for attempt in range(max_retries):
+                    try:
+                        response = await complete_chat_request(request_body, request.headers)
+                        break
+                    except Exception as e:
+                        if "429" in str(e) and attempt < max_retries - 1:
+                            wait_time = 20 + attempt * 10  # exponential backoff
+                            await asyncio.sleep(wait_time)
+                        else:
+                            response = {"text": "ERROR_429"}
+                            break
+
+                response = await complete_chat_request(request_body, request.headers)
+                generated_answer = response.get("text") or response.get("choices", [{}])[0].get("message", {}).get("content", "")
+                result_rows.append({
+                    "question": question,
+                    "generated_answer": generated_answer,
+                    "expected_answer": expected_answer
+                })
+
+                await asyncio.sleep(2)
+
+        #create result DataFrame and CSV
+        result_df = pd.DataFrame(result_rows)
+        result_csv_path = os.path.join(tempfile.gettempdir(), "results.csv")
+        result_df.to_csv(result_csv_path, index=False)
+
+        #check if upload was requested
+        if request.args.get("upload", "false").lower() == "true":
+            blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
+            blob_client = blob_service_client.get_blob_client(
+                container=AZURE_RESULTS_CONTAINER,
+                blob=AZURE_RESULTS_BLOB_NAME
+            )
+            with open(result_csv_path, "rb") as data:
+                await blob_client.upload_blob(data, overwrite=True)
+            return jsonify({"message": "Uploaded to Azure Blob Storage"}), 200
+
+        # Otherwise return the file so user can download and check
+        return await send_file(result_csv_path, as_attachment=True, download_name="chatbot_results.csv")
+
+    except Exception as e:
+        logging.exception("Error during chatbot evaluation")
+        return jsonify({"error": str(e)}), 500
+
+
 
 
 # Debug settings

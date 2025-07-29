@@ -4,3 +4,239 @@
 2025-07-18 10:39:07,211 - INFO - Transcription done in 5.16s: 'Ja, wenn ich auf Mikro Taste drücke. Dann seh ich ein seh ich eigentlich ein Timer mit abhaken Kreuz und. Wenn ich da abhaken drück.'
 2025-07-18 10:39:54,388 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
 2025-07-18 10:39:56,820 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-29 13:38:56,429 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-29 13:40:47,881 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 13:40:49,654 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 13:40:50,919 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 13:40:52,304 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 13:40:54,771 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 13:40:56,037 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 13:40:57,316 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 13:40:58,340 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 400 Bad Request"
+2025-07-29 13:40:58,343 - ERROR - Exception in send_chat_request
+Traceback (most recent call last):
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 613, in send_chat_request
+    raw_response = await azure_openai_client.chat.completions.with_raw_response.create(**model_args)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_legacy_response.py", line 373, in wrapped
+    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/resources/chat/completions.py", line 1661, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1843, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1537, in request
+    return await self._request(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1638, in _request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'requestid': '11325b1c-7ab7-4343-b9c0-724f81a38288', 'code': 400, 'message': 'An error occurred when calling Azure OpenAI: Server responded with status 429. Error message: {"error":{"code":"429","message": "Rate limit is exceeded. Try again in 49 seconds."}}'}}
+2025-07-29 13:40:58,349 - ERROR - Error during chatbot evaluation
+Traceback (most recent call last):
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 227, in evaluate
+    response = await complete_chat_request(request_body, request.headers)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 634, in complete_chat_request
+    response, apim_request_id = await send_chat_request(request_body, request_headers)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 618, in send_chat_request
+    raise e
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 613, in send_chat_request
+    raw_response = await azure_openai_client.chat.completions.with_raw_response.create(**model_args)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_legacy_response.py", line 373, in wrapped
+    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/resources/chat/completions.py", line 1661, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1843, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1537, in request
+    return await self._request(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1638, in _request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'requestid': '11325b1c-7ab7-4343-b9c0-724f81a38288', 'code': 400, 'message': 'An error occurred when calling Azure OpenAI: Server responded with status 429. Error message: {"error":{"code":"429","message": "Rate limit is exceeded. Try again in 49 seconds."}}'}}
+2025-07-29 15:01:29,870 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-29 15:01:32,566 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-29 15:01:42,371 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-29 15:01:49,075 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-29 15:08:42,834 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-29 15:09:32,732 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:09:34,265 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:09:35,905 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:09:37,128 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:09:39,588 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:09:41,735 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:09:42,656 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 400 Bad Request"
+2025-07-29 15:09:42,658 - ERROR - Exception in send_chat_request
+Traceback (most recent call last):
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 630, in send_chat_request
+    raw_response = await azure_openai_client.chat.completions.with_raw_response.create(**model_args)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_legacy_response.py", line 373, in wrapped
+    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/resources/chat/completions.py", line 1661, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1843, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1537, in request
+    return await self._request(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1638, in _request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'requestid': '95e5c4ca-70a1-425a-81f0-c66aa7e1095d', 'code': 400, 'message': 'An error occurred when calling Azure OpenAI: Server responded with status 429. Error message: {"error":{"code":"429","message": "Rate limit is exceeded. Try again in 50 seconds."}}'}}
+2025-07-29 15:09:42,665 - ERROR - Error during chatbot evaluation
+Traceback (most recent call last):
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 232, in evaluate
+    response = await complete_chat_request(request_body, request.headers)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 651, in complete_chat_request
+    response, apim_request_id = await send_chat_request(request_body, request_headers)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 635, in send_chat_request
+    raise e
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 630, in send_chat_request
+    raw_response = await azure_openai_client.chat.completions.with_raw_response.create(**model_args)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_legacy_response.py", line 373, in wrapped
+    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/resources/chat/completions.py", line 1661, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1843, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1537, in request
+    return await self._request(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1638, in _request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'requestid': '95e5c4ca-70a1-425a-81f0-c66aa7e1095d', 'code': 400, 'message': 'An error occurred when calling Azure OpenAI: Server responded with status 429. Error message: {"error":{"code":"429","message": "Rate limit is exceeded. Try again in 50 seconds."}}'}}
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 237, in evaluate
+    logging.warning(f"Rate limit hit for Q{idx+1}. Waiting {wait_time}s... (Attempt {attempt + 1})")
+                                           ^^^
+NameError: name 'idx' is not defined. Did you mean: 'id'?
+2025-07-29 15:10:41,230 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-29 15:11:03,239 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:11:04,751 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:11:06,270 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:11:07,695 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:11:10,174 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:11:11,381 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:11:12,333 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 400 Bad Request"
+2025-07-29 15:11:12,335 - ERROR - Exception in send_chat_request
+Traceback (most recent call last):
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 614, in send_chat_request
+    raw_response = await azure_openai_client.chat.completions.with_raw_response.create(**model_args)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_legacy_response.py", line 373, in wrapped
+    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/resources/chat/completions.py", line 1661, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1843, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1537, in request
+    return await self._request(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1638, in _request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'requestid': '923d4ca3-7a31-4af4-80f8-e6430fb43ce0', 'code': 400, 'message': 'An error occurred when calling Azure OpenAI: Server responded with status 429. Error message: {"error":{"code":"429","message": "Rate limit is exceeded. Try again in 51 seconds."}}'}}
+2025-07-29 15:11:12,342 - ERROR - Error during chatbot evaluation
+Traceback (most recent call last):
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 228, in evaluate
+    response = await complete_chat_request(request_body, request.headers)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 635, in complete_chat_request
+    response, apim_request_id = await send_chat_request(request_body, request_headers)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 619, in send_chat_request
+    raise e
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 614, in send_chat_request
+    raw_response = await azure_openai_client.chat.completions.with_raw_response.create(**model_args)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_legacy_response.py", line 373, in wrapped
+    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/resources/chat/completions.py", line 1661, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1843, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1537, in request
+    return await self._request(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1638, in _request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'requestid': '923d4ca3-7a31-4af4-80f8-e6430fb43ce0', 'code': 400, 'message': 'An error occurred when calling Azure OpenAI: Server responded with status 429. Error message: {"error":{"code":"429","message": "Rate limit is exceeded. Try again in 51 seconds."}}'}}
+2025-07-29 15:33:58,975 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-07-29 15:34:09,631 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:34:10,801 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:34:13,973 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:34:15,155 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:34:18,642 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-07-29 15:34:20,027 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 400 Bad Request"
+2025-07-29 15:34:20,028 - ERROR - Exception in send_chat_request
+Traceback (most recent call last):
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 628, in send_chat_request
+    raw_response = await azure_openai_client.chat.completions.with_raw_response.create(**model_args)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_legacy_response.py", line 373, in wrapped
+    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/resources/chat/completions.py", line 1661, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1843, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1537, in request
+    return await self._request(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1638, in _request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'requestid': 'aac35220-5290-406e-bd74-b2f0b7c0d964', 'code': 400, 'message': 'An error occurred when calling Azure OpenAI: Server responded with status 429. Error message: {"error":{"code":"429","message": "Rate limit is exceeded. Try again in 50 seconds."}}'}}
+2025-07-29 15:34:20,032 - ERROR - Error during chatbot evaluation
+Traceback (most recent call last):
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 240, in evaluate
+    response = await complete_chat_request(request_body, request.headers)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 649, in complete_chat_request
+    response, apim_request_id = await send_chat_request(request_body, request_headers)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 633, in send_chat_request
+    raise e
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/app.py", line 628, in send_chat_request
+    raw_response = await azure_openai_client.chat.completions.with_raw_response.create(**model_args)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_legacy_response.py", line 373, in wrapped
+    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/resources/chat/completions.py", line 1661, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1843, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1537, in request
+    return await self._request(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aliesen/Desktop/selly-gpt-microphone-app/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1638, in _request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'requestid': 'aac35220-5290-406e-bd74-b2f0b7c0d964', 'code': 400, 'message': 'An error occurred when calling Azure OpenAI: Server responded with status 429. Error message: {"error":{"code":"429","message": "Rate limit is exceeded. Try again in 50 seconds."}}'}}
