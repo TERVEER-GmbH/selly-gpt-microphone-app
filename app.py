@@ -55,6 +55,9 @@ import csv
 from azure.storage.blob.aio import BlobServiceClient
 import pandas as pd
 import zipfile
+import ssl
+import certifi
+from azure.core.pipeline.transport import AioHttpTransport
 
 
 
@@ -214,64 +217,70 @@ async def evaluate():
     try:
         with open(file_path, newline='', encoding='utf-8') as csvfile:
             reader = csv.DictReader(csvfile)
-            for row in reader:
+            for idx,row in enumerate(reader):
+                # if idx >= 20: #for testing first 
+                #     break
                 question = row['Question']
                 expected_answer = row['ExpectedAnswer']
-
+                logging.info(f"Processing question {idx+1}: {question}")
                 request_body = {
                     "messages": [{
                         "role": "user",
                         "content": question
                     }]
                 }
-                max_retries = 5
-                for attempt in range(max_retries):
-                    try:
-                        response = await complete_chat_request(request_body, request.headers)
-                        break
-                    except Exception as e:
-                        if "429" in str(e) and attempt < max_retries - 1:
-                            wait_time = 20 + attempt * 10  # exponential backoff
-                            await asyncio.sleep(wait_time)
-                        else:
-                            response = {"text": "ERROR_429"}
-                            break
-
-                response = await complete_chat_request(request_body, request.headers)
-                generated_answer = response.get("text") or response.get("choices", [{}])[0].get("message", {}).get("content", "")
+                
+                try:
+                    response = await complete_chat_request(request_body, request.headers)
+                    #logging.info(f"raw response: {response}") #gives everything
+               
+                    choices = response.get("choices", [])
+                    if choices:
+                        messages = choices[0].get("messages", [])
+                        generated_answer = messages[-1].get("content", "") if messages else ""
+                    else:
+                        generated_answer = ""
+                    
+                    logging.info(f"Generated answer for question {idx+1}: {generated_answer}")
+                except Exception as e:
+                    logging.error(f"Failed to get response for question {idx+1}: {e}")
+                    generated_answer = "ERROR"
+               
+            
                 result_rows.append({
                     "question": question,
                     "generated_answer": generated_answer,
                     "expected_answer": expected_answer
                 })
 
-                await asyncio.sleep(2)
+                await asyncio.sleep(15) #so that we don't get overload
 
-        #create result DataFrame and CSV
-        result_df = pd.DataFrame(result_rows)
-        result_csv_path = os.path.join(tempfile.gettempdir(), "results.csv")
-        result_df.to_csv(result_csv_path, index=False)
+        if not AZURE_STORAGE_CONNECTION_STRING:
+            raise ValueError("Plese set Storage Connection String")
+        
+        #save to CSV
+        results_df = pd.DataFrame(result_rows)
+        results_csv_path = os.path.join(tempfile.gettempdir(), "results.csv")
+        results_df.to_csv(results_csv_path, index=False)
 
-        #check if upload was requested
-        if request.args.get("upload", "false").lower() == "true":
-            blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
-            blob_client = blob_service_client.get_blob_client(
-                container=AZURE_RESULTS_CONTAINER,
-                blob=AZURE_RESULTS_BLOB_NAME
-            )
-            with open(result_csv_path, "rb") as data:
-                await blob_client.upload_blob(data, overwrite=True)
-            return jsonify({"message": "Uploaded to Azure Blob Storage"}), 200
+        transport = AioHttpTransport(connection_verify=certifi.where()) #so that our venv could find the certificate
 
-        # Otherwise return the file so user can download and check
-        return await send_file(result_csv_path, as_attachment=True, download_name="chatbot_results.csv")
+        #Upload to Azure blob
+        service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING, transport=transport)
+        container_name = AZURE_RESULTS_CONTAINER
+        virtual_dir = "golden_cases/results.csv"
+        client = service_client.get_blob_client(container=container_name, blob=virtual_dir)
+
+        with open(results_csv_path, "rb") as f:
+            await client.upload_blob(f, overwrite=True) # if a blob witht the same name already exists then overwrite it!!
+        logging.info("uploaded to Azure Blob Storge")
+
+        return await send_file(results_csv_path, as_attachment=True, attachment_filename="results.csv") #so that we get the result.csv locally too
+
 
     except Exception as e:
         logging.exception("Error during chatbot evaluation")
         return jsonify({"error": str(e)}), 500
-
-
-
 
 # Debug settings
 DEBUG = os.environ.get("DEBUG", "false")

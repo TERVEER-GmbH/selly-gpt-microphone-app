@@ -1,1 +1,0 @@
-{"error":"Error code: 400 - {'error': {'requestid': 'aac35220-5290-406e-bd74-b2f0b7c0d964', 'code': 400, 'message': 'An error occurred when calling Azure OpenAI: Server responded with status 429. Error message: {\"error\":{\"code\":\"429\",\"message\": \"Rate limit is exceeded. Try again in 50 seconds.\"}}'}}"}
