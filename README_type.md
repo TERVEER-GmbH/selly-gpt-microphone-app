@@ -1,0 +1,1 @@
+This is the microphone that we implemented on app.py and merged to our main branch. This microphone converts the audio data received in blob form into raw PCM and writes it to memory. This microphone can understand up to 10 languages (limit) and has completion and cancellation buttons. It also has a timer so that the user can see how long they have been talking.
