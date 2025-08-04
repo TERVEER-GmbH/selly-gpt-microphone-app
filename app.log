@@ -8,3 +8,7 @@
 2025-08-04 12:04:19,560 - INFO - Transcription request received
 2025-08-04 12:04:19,866 - INFO - FFmpeg → PCM successful
 2025-08-04 12:04:22,387 - INFO - Transcription done in 2.83s: 'Merhaba, beni duyabiliyor musun?'
+2025-08-04 15:33:20,109 - INFO - Running on http://127.0.0.1:50505 (CTRL + C to quit)
+2025-08-04 15:33:39,460 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-04 15:33:58,927 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
+2025-08-04 15:34:15,092 - INFO - HTTP Request: POST https://tvr-azure-ai-service599779676372.openai.azure.com//openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview "HTTP/1.1 200 OK"
