@@ -87,11 +87,18 @@ AZURE_RESULTS_CONTAINER = os.getenv("AZURE_RESULTS_CONTAINER")
 AZURE_RESULTS_BLOB_NAME = os.getenv("AZURE_RESULTS_BLOB_NAME")
 
 
-bp = Blueprint("routes", __name__, static_folder="static", template_folder="static")
+# bp = Blueprint("routes", __name__, static_folder="static", template_folder="static")
+bp = Blueprint("routes", __name__)
+
 
 
 def create_app():
-    app = Quart(__name__)
+    app = Quart(
+        __name__,
+        static_folder="static",      # relativ zum Arbeitsverzeichnis: backend/static
+        static_url_path="",           # damit `/index.html` und `/assets/...` direkt funktionieren
+        template_folder="static",     # falls du auch Jinja-Templates im static-Ordner hast
+    )
 
     # Alle existierenden Endpoints
     app.register_blueprint(bp)

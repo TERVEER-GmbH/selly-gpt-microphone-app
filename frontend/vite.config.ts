@@ -19,35 +19,35 @@ export default defineConfig({
     // alle API-Aufrufe auf Port 50505 forwarden
     proxy: {
       '/ask': {
-        target: 'http://localhost:50505',
+        target: 'http://localhost:8000',
         changeOrigin: true,
       },
       '/chat': {
-        target: 'http://localhost:50505',
+        target: 'http://localhost:8000',
         changeOrigin: true,
       },
       '/auth': {
-        target: 'http://localhost:50505',
+        target: 'http://localhost:8000',
         changeOrigin: true,
       },
       '/conversation': {
-        target: 'http://localhost:50505',
+        target: 'http://localhost:8000',
         changeOrigin: true,
       },
       '/history': {
-        target: 'http://localhost:50505',
+        target: 'http://localhost:8000',
         changeOrigin: true,
       },
       '/admin': {
-        target: 'http://localhost:50505',
+        target: 'http://localhost:8000',
         changeOrigin: true,
       },
       '/transcribe': {
-        target: 'http://localhost:50505',
+        target: 'http://localhost:8000',
         changeOrigin: true,
       },
       '/frontend_settings': {
-        target: 'http://localhost:50505',
+        target: 'http://localhost:8000',
         changeOrigin: true,
       },
 
