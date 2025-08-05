@@ -38,11 +38,19 @@ export default defineConfig({
         target: 'http://localhost:50505',
         changeOrigin: true,
       },
-      // ganz wichtig: deine Admin-Endpoints
       '/admin': {
         target: 'http://localhost:50505',
         changeOrigin: true,
       },
+      '/transcribe': {
+        target: 'http://localhost:50505',
+        changeOrigin: true,
+      },
+      '/frontend_settings': {
+        target: 'http://localhost:50505',
+        changeOrigin: true,
+      },
+
     }
   }
 })

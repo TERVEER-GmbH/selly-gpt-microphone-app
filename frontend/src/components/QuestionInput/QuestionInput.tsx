@@ -107,7 +107,16 @@ export const QuestionInput = ({ onSend, disabled, placeholder, clearOnSend, conv
         </div>)}
       {base64Image && <img className={styles.uploadedImage} src={base64Image} alt="Uploaded Preview" />}
       <div className={styles.questionInputSendButtonContainer}>
-        <MicButton onTranscript={(text, append) => {setQuestion(prev => append ? prev + (prev ? ' ' : '') + text : text)}} />
+        <MicButton
+          onTranscript={(text: string, append: boolean) => {
+            setQuestion(prev =>
+              append
+                ? prev + (prev ? ' ' : '') + text
+                : text
+            );
+          }}
+        />
+
       <div
         role="button"
         tabIndex={0}

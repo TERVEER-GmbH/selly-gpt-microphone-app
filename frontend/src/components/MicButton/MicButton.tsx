@@ -1,138 +1,119 @@
-import { useState, useRef, useEffect } from 'react'
-import MicIcon from '../../assets/MicrophoneIcon.svg'
-import CheckIcon from '../../assets/Checkmark Icon.svg'
-import CrossIcon from '../../assets/Cross Mark Icon.svg'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { Box, IconButton, Typography } from '@mui/material'
+import MicIcon      from '@mui/icons-material/Mic'
+import CheckIcon    from '@mui/icons-material/Check'
+import CancelIcon   from '@mui/icons-material/Close'
+
+type Status = 'idle' | 'recording' | 'transcribing'
 
 export interface MicButtonProps {
-  onTranscript: (text: string, append?: boolean) => void
+  /**
+   * Wird aufgerufen, wenn Transkription fertig ist.
+   * @param text   Der erkannte Text
+   * @param append Ob der Text angehängt werden soll (true) oder ersetzen (false)
+   */
+  onTranscript: (text: string, append: boolean) => void;
 }
 
 export function MicButton({ onTranscript }: MicButtonProps) {
-  const [listening, setListening] = useState(false)
-  const [transcribing, setTranscribing] = useState(false)
+  const [status, setStatus] = useState<Status>('idle')
   const [elapsed, setElapsed] = useState(0)
+  const mediaRecorder = useRef<MediaRecorder>()
+  const streamRef     = useRef<MediaStream>()
+  const chunksRef     = useRef<BlobPart[]>([])
+  const sendOnStop    = useRef(false)
+  const timerId       = useRef<number>()
 
-  const mediaRecorder = useRef<MediaRecorder | null>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-  const chunksRef = useRef<BlobPart[]>([])
-  const sendOnStop = useRef(false)
-  const timerIdRef = useRef<number | null>(null)
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => stopAll()
+  // Cleanup
+  const stopAll = useCallback(() => {
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    window.clearInterval(timerId.current!)
+    setStatus('idle')
+    setElapsed(0)
+    chunksRef.current = []
+    mediaRecorder.current = undefined
   }, [])
 
-  // Timer effect
+  // Timer Hook
   useEffect(() => {
-    if (listening) {
+    if (status === 'recording') {
       setElapsed(0)
-      timerIdRef.current = window.setInterval(() => setElapsed(sec => sec + 1), 1000)
+      timerId.current = window.setInterval(() => setElapsed(e => e + 1), 1000)
     }
-    return () => {
-      if (timerIdRef.current) {
-        clearInterval(timerIdRef.current)
-        timerIdRef.current = null
-      }
-    }
-  }, [listening])
+    return () => window.clearInterval(timerId.current!)
+  }, [status])
 
-  function startListening() {
-    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+  const startListening = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
-
       const recorder = new MediaRecorder(stream)
       mediaRecorder.current = recorder
       chunksRef.current = []
 
-      recorder.ondataavailable = ev => chunksRef.current.push(ev.data)
+      recorder.ondataavailable = e => chunksRef.current.push(e.data)
       recorder.onstop = async () => {
-        stopAll()
         if (sendOnStop.current) {
+          setStatus('transcribing')
           const blob = new Blob(chunksRef.current, { type: 'audio/webm;codecs=opus' })
-          setTranscribing(true)
           try {
             const res = await fetch('/transcribe', { method: 'POST', body: blob })
-            const data = await res.json()
-            onTranscript(data.text, true)
-          } catch (e) {
-            console.error('❌ Mic: error sending blob', e)
-          } finally {
-            setTranscribing(false)
+            const { text } = await res.json()
+            onTranscript(text, true)
+          } catch {
+            // z.B. setError('Transcription failed')
           }
         }
+        stopAll()
       }
 
       recorder.start()
-      setListening(true)
-    }).catch(err => {
-      console.error('❌ Mic access error', err)
-      alert('Please allow microphone access.')
-    })
-  }
+      setStatus('recording')
+    } catch {
+      // open Snackbar statt alert
+    }
+  }, [onTranscript, stopAll])
 
-  function confirmListening() {
+  const confirm = () => {
     sendOnStop.current = true
     mediaRecorder.current?.stop()
   }
-
-  function cancelListening() {
+  const cancel = () => {
     sendOnStop.current = false
     mediaRecorder.current?.stop()
-    stopAll()
   }
 
-  function stopAll() {
-    setListening(false)
-    setTranscribing(false)
-    streamRef.current?.getTracks().forEach(t => t.stop())
-    if (timerIdRef.current) {
-      clearInterval(timerIdRef.current)
-      timerIdRef.current = null
-    }
-  }
-
-  function formatTime(sec: number) {
-    const m = Math.floor(sec / 60)
-    const s = sec % 60
-    return `${m}:${s.toString().padStart(2, '0')}`
+  const formatTime = (sec: number) => {
+    const m = String(Math.floor(sec/60)).padStart(2,'0')
+    const s = String(sec%60).padStart(2,'0')
+    return `${m}:${s}`
   }
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      {!listening && !transcribing && (
-        <button
-          onClick={startListening}
-          aria-label="Start Recording"
-          style={{ background: 'none', border: 'none', cursor: 'pointer' }}
-        >
-          <img src={MicIcon} alt="Start" width={24} height={24} />
-        </button>
+    <Box display="flex" alignItems="center">
+      {status === 'idle' && (
+        <IconButton onClick={startListening} aria-label="Start Recording">
+          <MicIcon />
+        </IconButton>
       )}
-
-      {listening && !transcribing && (
+      {status === 'recording' && (
         <>
-          <button
-            onClick={cancelListening}
-            aria-label="Cancel Recording"
-            style={{ background: 'none', border: 'none', cursor: 'pointer' }}
-          >
-            <img src={CrossIcon} alt="Cancel" width={24} height={24} />
-          </button>
-          <span style={{ fontFamily: 'monospace', fontSize: 14 }}>{formatTime(elapsed)}</span>
-          <button
-            onClick={confirmListening}
-            aria-label="Confirm Recording"
-            style={{ background: 'none', border: 'none', cursor: 'pointer' }}
-          >
-            <img src={CheckIcon} alt="Confirm" width={24} height={24} />
-          </button>
+          <IconButton onClick={cancel} aria-label="Cancel">
+            <CancelIcon />
+          </IconButton>
+          <Typography component="span" sx={{ fontFamily: 'monospace', mx: 1 }}>
+            {formatTime(elapsed)}
+          </Typography>
+          <IconButton onClick={confirm} aria-label="Confirm">
+            <CheckIcon />
+          </IconButton>
         </>
       )}
-
-      {transcribing && (
-        <span style={{ fontStyle: 'italic', color: '#555' }}>Transcribing...</span>
+      {status === 'transcribing' && (
+        <Typography component="span" sx={{ fontStyle: 'italic', color: 'text.secondary' }}>
+          Transcribing…
+        </Typography>
       )}
-    </div>
+    </Box>
   )
 }
