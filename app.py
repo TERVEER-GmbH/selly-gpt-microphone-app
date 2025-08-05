@@ -19,7 +19,8 @@ from quart import (
     send_from_directory,
     render_template,
     current_app,
-    send_file
+    send_file,
+    abort
 )
 
 from openai import AsyncAzureOpenAI
@@ -77,6 +78,7 @@ c_handler.setFormatter(formatter)
 logger.addHandler(f_handler)
 logger.addHandler(c_handler)
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 #for speech
 SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY")
@@ -93,11 +95,12 @@ bp = Blueprint("routes", __name__)
 
 
 def create_app():
+    static_dir = os.path.join(BASE_DIR, "static")        # backend/static
     app = Quart(
         __name__,
-        static_folder="static",      # relativ zum Arbeitsverzeichnis: backend/static
-        static_url_path="",           # damit `/index.html` und `/assets/...` direkt funktionieren
-        template_folder="static",     # falls du auch Jinja-Templates im static-Ordner hast
+        static_folder=static_dir,                        # wo wirklich die Dateien sind
+        static_url_path="",                              # serve assets unter /
+        template_folder=static_dir                       # index.html dort
     )
 
     # Alle existierenden Endpoints
@@ -237,14 +240,14 @@ async def transcribe():
     logger.info(f"Transcription done in {time.time()-start_t:.2f}s: {transcript!r}")
     return jsonify({"text": transcript})
 
-@bp.route("/favicon.ico")
-async def favicon():
-    return await bp.send_static_file("favicon.ico")
+# @bp.route("/favicon.ico")
+# async def favicon():
+#     return await bp.send_static_file("favicon.ico")
 
 
-@bp.route("/assets/<path:path>")
-async def assets(path):
-    return await send_from_directory("static/assets", path)
+# @bp.route("/assets/<path:path>")
+# async def assets(path):
+#     return await send_from_directory("static/assets", path)
 
 @bp.route("/evaluate", methods=["POST"])
 async def evaluate():
@@ -1284,5 +1287,13 @@ async def whoami():
 @bp.route('/.auth/me', methods=['GET'])
 async def azure_auth_me():
     return await whoami()
+
+@bp.route("/<path:path>")
+async def spa(path):
+    # wenn’s eine API‐Route ist, 404 werfen
+    if path.startswith(("conversation","history","auth",".auth","transcribe","admin")):
+        return abort(404)
+    # sonst index.html ausliefern
+    return await send_file(os.path.join(app.static_folder, "index.html"))
 
 app = create_app()
