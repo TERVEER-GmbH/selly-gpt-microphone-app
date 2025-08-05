@@ -53,8 +53,6 @@ import ffmpeg
 import csv
 from azure.storage.blob.aio import BlobServiceClient
 import pandas as pd
-import zipfile
-import ssl
 import certifi
 from azure.core.pipeline.transport import AioHttpTransport
 
