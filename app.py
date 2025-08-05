@@ -1282,16 +1282,6 @@ async def whoami():
         "is_admin": "Admin" in roles,
     })
 
-@bp.route("/auth/test", methods=["GET"])
-async def auth_test():
-    """Gibt Userinformationen und Rollen zurück (für das Frontend)."""
-
-    raw_user_object = {k:v for k,v in request.headers.items()}
-
-    return jsonify({
-        "test": raw_user_object.get('X-Ms-Client-Principal')
-    })
-
 @bp.route('/.auth/me', methods=['GET'])
 async def azure_auth_me():
     return await whoami()
