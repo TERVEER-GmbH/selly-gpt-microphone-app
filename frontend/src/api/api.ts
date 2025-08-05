@@ -1,6 +1,6 @@
 import { chatHistorySampleData } from '../constants/chatHistory'
 
-import { ChatMessage, Conversation, ConversationRequest, CosmosDBHealth, CosmosDBStatus, UserInfo } from './models'
+import { ChatMessage, Conversation, ConversationRequest, CosmosDBHealth, CosmosDBStatus, UserInfo, WhoAmI, Prompt } from './models'
 
 export async function conversationApi(options: ConversationRequest, abortSignal: AbortSignal): Promise<Response> {
   const response = await fetch('/conversation', {
@@ -26,6 +26,20 @@ export async function getUserInfo(): Promise<UserInfo[]> {
 
   const payload = await response.json()
   return payload
+}
+
+export async function getWhoAmI(): Promise<WhoAmI> {
+  const response = await fetch('/auth/whoami', {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) {
+    console.error('Failed to fetch user info:', response.status)
+    return { authenticated: false, user_name: '', email: '', roles: [], is_admin: false }
+  }
+
+  const user: WhoAmI = await response.json()
+  return user
 }
 
 // export const fetchChatHistoryInit = async (): Promise<Conversation[] | null> => {
@@ -351,4 +365,54 @@ export const historyMessageFeedback = async (messageId: string, feedback: string
       return errRes
     })
   return response
+}
+
+// 1. Liste aller Prompts holen
+export async function getAdminPrompts(): Promise<Prompt[]> {
+  const res = await fetch('/admin/prompts', { headers: { 'Content-Type': 'application/json' } });
+  if (!res.ok) throw new Error(`Failed to load prompts: ${res.status}`);
+  return await res.json();
+}
+
+// 2. Einen neuen Prompt anlegen
+export async function createPrompt(payload: Omit<Prompt, 'id'>): Promise<Prompt> {
+  const res = await fetch('/admin/prompts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error(`Create failed: ${res.status}`);
+  return await res.json();
+}
+
+// 3. Prompt aktualisieren
+export async function updatePrompt(id: string, payload: Omit<Prompt, 'id'>): Promise<Prompt> {
+  const res = await fetch(`/admin/prompts/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error(`Update failed: ${res.status}`);
+  return await res.json();
+}
+
+// 4. Prompt löschen
+export async function deletePrompt(id: string): Promise<void> {
+  const res = await fetch(`/admin/prompts/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
+}
+
+// 5. Prompts importieren
+export async function importPrompts(file: File): Promise<{ errors: any[]; created: Prompt[] }> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch('/admin/prompts/import', {
+    method: 'POST',
+    body: form
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || `Import failed: ${res.status}`);
+  }
+  return await res.json();
 }

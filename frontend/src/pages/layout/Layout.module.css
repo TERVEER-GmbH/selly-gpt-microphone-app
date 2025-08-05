@@ -1,3 +1,21 @@
+:global(html), :global(body), :global(#root) {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.layout {
+  display: flex;
+  flex-direction: column;
+  height: 100%;        /* volle Höhe vom #root übernehmen */
+}
+
+.content {
+  flex: 1;             /* Hauptbereich wächst */
+  display: flex;       /* damit ChatPanel und ggf. HistoryPanel nebeneinander sind */
+  min-height: 0;       /* ganz wichtig, damit flex-Kinder nicht über den Container hinausragen */
+}
+
 .layout {
   display: flex;
   flex-direction: column;
@@ -108,4 +126,20 @@
   .headerIcon {
     margin-left: 26px;
   }
+}
+
+.adminButton {
+  background-color: #0078d4;
+  color: #fff;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  text-decoration: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.adminButton:hover {
+  background-color: #005a9e;
 }

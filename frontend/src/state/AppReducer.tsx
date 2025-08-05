@@ -82,6 +82,15 @@ export const appStateReducer = (state: AppState, action: Action): AppState => {
           [action.payload.answerId]: action.payload.exec_result
         }
       }
+    case 'SET_USER':
+      return {
+        ...state,
+        userName: action.payload.userName,
+        email: action.payload.email,
+        roles: action.payload.roles,
+        isAdmin: action.payload.isAdmin,
+        isLoading: false
+      }
     default:
       return state
   }

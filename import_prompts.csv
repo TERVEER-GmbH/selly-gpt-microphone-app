@@ -1,0 +1,106 @@
+text,golden_answer,tags
+Translate 'hello' to Spanish,hola
+Translate 'good night' to French,bonne nuit
+Translate 'thank you' to German,danke
+Translate 'goodbye' to Chinese,再见
+Translate 'I love programming' to Japanese,プログラミングが大好きです
+Provide a synonym for 'happy',joyful
+Provide a synonym for 'fast',quick
+Provide a synonym for 'smart',intelligent
+Provide a synonym for 'big',large
+Provide a synonym for 'small',tiny
+Provide an antonym for 'hot',cold
+Provide an antonym for 'light',dark
+Provide an antonym for 'early',late
+Provide an antonym for 'up',down
+Provide an antonym for 'inside',outside
+What is 5 plus 7?,12
+What is 12 times 3?,36
+What is the square root of 81?,9
+What is 15 divided by 3?,5
+What is 2 to the power of 5?,32
+Solve for x: 2x + 3 = 7,2
+Solve for x: x/4 = 3,12
+Solve for x: 3x - 5 = 10,5
+Solve for x: x^2 = 16,4 and -4
+Solve for x: 5x + 2 = 17,3
+What is the capital of France?,Paris
+What is the capital of Japan?,Tokyo
+What is the capital of Australia?,Canberra
+What is the capital of Canada?,Ottawa
+What is the capital of Brazil?,Brasília
+Who wrote '1984'?,George Orwell
+Who painted the Mona Lisa?,Leonardo da Vinci
+Who discovered penicillin?,Alexander Fleming
+Who developed the theory of relativity?,Albert Einstein
+Who is known as the father of computers?,Charles Babbage
+Summarize 'To Kill a Mockingbird' in one sentence.,A lawyer defends an innocent black man accused of assault in a racially divided town.
+Summarize 'Romeo and Juliet' in one sentence.,Two young lovers from feuding families fall tragically in love and their deaths reconcile their families.
+Summarize the movie 'Inception' in one sentence.,A thief uses dream-sharing technology to plant an idea in someone's mind while confronting his own guilt.
+Summarize the book 'The Hobbit' in one sentence.,A hobbit embarks on an adventurous quest with dwarves to reclaim their homeland from a dragon.
+Summarize the TV show 'Breaking Bad' in one sentence.,A chemistry teacher turns to cooking methamphetamine to secure his family's future after a cancer diagnosis.
+Explain the meaning of the idiom 'break the ice'.,To initiate conversation in a social setting.
+Explain the meaning of the idiom 'hit the sack'.,To go to bed/sleep.
+Explain the meaning of the idiom 'let the cat out of the bag'.,To reveal a secret.
+Explain the meaning of the idiom 'once in a blue moon'.,Very rarely.
+Explain the meaning of the idiom 'beat around the bush'.,To avoid getting to the point.
+Write a Haiku about winter.,Snow blankets the ground / Silence drapes the icy trees / Breath forms frosty clouds
+Write a limerick about a cat.,"There once was a cat from Peru
+Who dreamed of eating a shoe
+It munched with a purr
+On laces that were fur
+And wondered if leather would do"
+Write a two-line rhyme about rain.,Raindrops tapping the pane / Soothing rhythm again
+Write a three-line rhyme about the sun.,Golden rays at dawn / Warmth awakens sleepy earth / Day's bright song is on
+Write a four-line rhyme about stars.,Twinkling gems in velvet skies / Guiding dreams as night-time flies / They whisper tales of ancient light / In silence stitching cosmic ties
+Classify the sentiment of 'I am thrilled with the results!',Positive
+Classify the sentiment of 'This is the worst day ever.',Negative
+"Classify the sentiment of 'The movie was okay, not great.'",Neutral
+Classify the sentiment of 'I can't wait to see you again.',Positive
+Classify the sentiment of 'I'm disappointed by the service.',Negative
+What is the chemical symbol for water?,H2O
+What is the chemical symbol for gold?,Au
+What is the chemical symbol for sodium?,Na
+What is the chemical symbol for carbon dioxide?,CO2
+What is the chemical symbol for iron?,Fe
+Define 'photosynthesis'.,"Process by which green plants convert sunlight, CO2, and water into glucose and oxygen."
+Define 'evaporation'.,Process of liquid turning into vapor.
+Define 'mitosis'.,Cell division process producing two identical daughter cells.
+Define 'gravity'.,Force that attracts objects with mass toward each other.
+Define 'osmotic pressure'.,Pressure required to prevent solvent passage through a semipermeable membrane.
+Convert 100 degrees Celsius to Fahrenheit.,212°F
+Convert 32 degrees Fahrenheit to Celsius.,0°C
+Convert 1 kilogram to pounds.,Approximately 2.20462 lbs
+Convert 10 miles to kilometers.,Approximately 16.0934 km
+Convert 5 liters to gallons.,Approximately 1.32086 gallons (US)
+What is the plural of 'mouse'?,mice
+What is the plural of 'child'?,children
+What is the plural of 'analysis'?,analyses
+What is the plural of 'cactus'?,cacti
+What is the plural of 'ox'?,oxen
+Identify the language of 'Bonjour'.,French
+Identify the language of 'Hallo'.,German
+Identify the language of 'Ciao'.,Italian
+Identify the language of 'こんにちは'.,Japanese
+Identify the language of 'Здравствуйте'.,Russian
+Explain the difference between 'affect' and 'effect'.,'Affect' is a verb meaning to influence; 'effect' is a noun meaning result.
+Explain the difference between 'their' and 'there'.,'Their' shows possession; 'there' refers to location.
+Explain the difference between 'its' and 'it's'.,'Its' is a possessive pronoun; 'it's' is a contraction of 'it is'.
+Explain the difference between 'then' and 'than'.,'Then' relates to time; 'than' is used in comparisons.
+"Explain the difference between 'to', 'too', and 'two'.",'To' is a preposition; 'too' means also or excessively; 'two' is the number 2.
+Write a Python function that returns the square of a number.,"def square(n):
+    return n * n"
+Write a Python list comprehension to get squares of numbers 1-5.,"[n*n for n in range(1,6)]"
+Write a JavaScript arrow function to add two numbers.,"(a, b) => a + b"
+Write a SQL query to select all columns from table 'users'.,SELECT * FROM users;
+Write an HTML snippet for an image with src 'image.png'.,<img src='image.png' alt='' />
+Normalize the whitespace in ' Hello   world '.,Hello world
+"Remove punctuation from 'Hello, world!'.",Hello world
+Extract numbers from 'abc123def'.,['123']
+Count the words in 'One two three four'.,4
+Reverse the string 'hello'.,olleh
+"Convert the list [1,2,3] to a comma-separated string.","1,2,3"
+"Find the maximum in [5, 3, 9, 1].",9
+"Sort the list [3,1,2].","[1,2,3]"
+Check if 'apple' starts with 'app'.,True
+"Check if list ['a','b','c'] contains 'd'.",False

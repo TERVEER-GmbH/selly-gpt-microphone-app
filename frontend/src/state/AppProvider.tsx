@@ -14,7 +14,8 @@ import {
   FrontendSettings,
   frontendSettings,
   historyEnsure,
-  historyList
+  historyList,
+  getWhoAmI
 } from '../api'
 
 import { appStateReducer } from './AppReducer'
@@ -30,6 +31,10 @@ export interface AppState {
   feedbackState: { [answerId: string]: Feedback.Neutral | Feedback.Positive | Feedback.Negative }
   isLoading: boolean;
   answerExecResult: { [answerId: string]: [] }
+  userName: string
+  email: string
+  roles: string[]
+  isAdmin: boolean
 }
 
 export type Action =
@@ -51,6 +56,7 @@ export type Action =
   }
   | { type: 'GET_FEEDBACK_STATE'; payload: string }
   | { type: 'SET_ANSWER_EXEC_RESULT'; payload: { answerId: string, exec_result: [] } }
+  | { type: 'SET_USER'; payload: { userName: string; email: string; roles: string[]; isAdmin: boolean } }
 
 const initialState: AppState = {
   isChatHistoryOpen: false,
@@ -66,6 +72,10 @@ const initialState: AppState = {
   feedbackState: {},
   isLoading: true,
   answerExecResult: {},
+  userName: '',
+  email: '',
+  roles: [],
+  isAdmin: false,
 }
 
 export const AppStateContext = createContext<
@@ -82,6 +92,26 @@ type AppStateProviderProps = {
 
 export const AppStateProvider: React.FC<AppStateProviderProps> = ({ children }) => {
   const [state, dispatch] = useReducer(appStateReducer, initialState)
+
+  // -> Effekt: User-Info holen (whoami)
+  useEffect(() => {
+    (async () => {
+      try {
+        const who = await getWhoAmI()
+        dispatch({
+          type: 'SET_USER',
+          payload: {
+            userName: who.user_name,
+            email: who.email,
+            roles: who.roles,
+            isAdmin: who.is_admin,
+          }
+        })
+      } catch (err) {
+        console.error('Fehler beim Laden der User-Info:', err)
+      }
+    })()
+  }, [])
 
   useEffect(() => {
     // Check for cosmosdb config and fetch initial data here

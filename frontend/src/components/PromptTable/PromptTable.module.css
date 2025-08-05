@@ -1,0 +1,27 @@
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.headerCell {
+  background-color: #f1f1f1;
+  padding: 8px;
+  text-align: left;
+  border-bottom: 2px solid #ddd;
+}
+.row:nth-child(even) {
+  background-color: #fafafa;
+}
+.cell {
+  padding: 8px;
+  border-bottom: 1px solid #eee;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+}
+.button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+}

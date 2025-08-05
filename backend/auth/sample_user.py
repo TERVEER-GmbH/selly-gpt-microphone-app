@@ -28,7 +28,7 @@ sample_user = {
   "X-Forwarded-For": "22.222.222.22:64379",
   "X-Forwarded-Proto": "https",
   "X-Forwarded-Tlsversion": "1.2",
-  "X-Ms-Client-Principal": "your_base_64_encoded_token",
+  "X-Ms-Client-Principal": "eyJhdXRoX3R5cCI6ImFhZCIsIm5hbWVfdHlwIjoiaHR0cDovL3NjaGVtYXMueG1sc29hcC5vcmcvd3MvMjAwNS8wNS9pZGVudGl0eS9jbGFpbXMvbmFtZSIsInJvbGVfdHlwIjoiaHR0cDovL3NjaGVtYXMubWljcm9zb2Z0LmNvbS93cy8yMDA4LzA2L2lkZW50aXR5L2NsYWltcy9yb2xlIiwiY2xhaW1zIjpbeyJ0eXAiOiJodHRwOi8vc2NoZW1hcy54bWxzb2FwLm9yZy93cy8yMDA1LzA1L2lkZW50aXR5L2NsYWltcy9uYW1lIiwidmFsIjoiTWF4IE11c3Rlcm1hbm4ifSx7InR5cCI6Imh0dHA6Ly9zY2hlbWFzLnhtbHNvYXAub3JnL3dzLzIwMDUvMDUvaWRlbnRpdHkvY2xhaW1zL2VtYWlsYWRkcmVzcyIsInZhbCI6Im1heEBmaXJtYS5jb20ifSx7InR5cCI6Imh0dHA6Ly9zY2hlbWFzLm1pY3Jvc29mdC5jb20vaWRlbnRpdHkvY2xhaW1zL29iamVjdGlkZW50aWZpZXIiLCJ2YWwiOiIxMjM0NTY3OC05YWJjLWRlZjAtMTIzNC01Njc4OWFiY2RlZjAifSx7InR5cCI6Imh0dHA6Ly9zY2hlbWFzLm1pY3Jvc29mdC5jb20vd3MvMjAwOC8wNi9pZGVudGl0eS9jbGFpbXMvcm9sZSIsInZhbCI6IkFkbWluIn0seyJ0eXAiOiJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiLCJ2YWwiOiJNYW5hZ2VyIn1dfQ==",
   "X-Ms-Client-Principal-Id": "00000000-0000-0000-0000-000000000000",
   "X-Ms-Client-Principal-Idp": "aad",
   "X-Ms-Client-Principal-Name": "testusername@constoso.com",

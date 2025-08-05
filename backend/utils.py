@@ -6,9 +6,12 @@ import dataclasses
 
 from typing import List
 
-DEBUG = os.environ.get("DEBUG", "false")
-if DEBUG.lower() == "true":
-    logging.basicConfig(level=logging.DEBUG)
+# DEBUG = os.environ.get("DEBUG", "false")
+# if DEBUG.lower() == "true":
+#     logging.basicConfig(level=logging.DEBUG)
+
+logger = logging.getLogger("logger")
+
 
 AZURE_SEARCH_PERMITTED_GROUPS_COLUMN = os.environ.get(
     "AZURE_SEARCH_PERMITTED_GROUPS_COLUMN"
@@ -27,7 +30,7 @@ async def format_as_ndjson(r):
         async for event in r:
             yield json.dumps(event, cls=JSONEncoder) + "\n"
     except Exception as error:
-        logging.exception("Exception while generating response stream: %s", error)
+        logger.exception("Exception while generating response stream: %s", error)
         yield json.dumps({"error": str(error)})
 
 
@@ -49,7 +52,7 @@ def fetchUserGroups(userToken, nextLink=None):
     try:
         r = requests.get(endpoint, headers=headers)
         if r.status_code != 200:
-            logging.error(f"Error fetching user groups: {r.status_code} {r.text}")
+            logger.error(f"Error fetching user groups: {r.status_code} {r.text}")
             return []
 
         r = r.json()
@@ -59,7 +62,7 @@ def fetchUserGroups(userToken, nextLink=None):
 
         return r["value"]
     except Exception as e:
-        logging.error(f"Exception in fetchUserGroups: {e}")
+        logger.error(f"Exception in fetchUserGroups: {e}")
         return []
 
 
@@ -69,7 +72,7 @@ def generateFilterString(userToken):
 
     # Construct filter string
     if not userGroups:
-        logging.debug("No user groups found")
+        logger.debug("No user groups found")
 
     group_ids = ", ".join([obj["id"] for obj in userGroups])
     return f"{AZURE_SEARCH_PERMITTED_GROUPS_COLUMN}/any(g:search.in(g, '{group_ids}'))"
@@ -163,27 +166,27 @@ def format_pf_non_streaming_response(
     chatCompletion, history_metadata, response_field_name, citations_field_name, message_uuid=None
 ):
     if chatCompletion is None:
-        logging.error(
+        logger.error(
             "chatCompletion object is None - Increase PROMPTFLOW_RESPONSE_TIMEOUT parameter"
         )
         return {
             "error": "No response received from promptflow endpoint increase PROMPTFLOW_RESPONSE_TIMEOUT parameter or check the promptflow endpoint."
         }
     if "error" in chatCompletion:
-        logging.error(f"Error in promptflow response api: {chatCompletion['error']}")
+        logger.error(f"Error in promptflow response api: {chatCompletion['error']}")
         return {"error": chatCompletion["error"]}
 
-    logging.debug(f"chatCompletion: {chatCompletion}")
+    logger.debug(f"chatCompletion: {chatCompletion}")
     try:
         messages = []
         if response_field_name in chatCompletion:
             messages.append({
                 "role": "assistant",
-                "content": chatCompletion[response_field_name] 
+                "content": chatCompletion[response_field_name]
             })
         if citations_field_name in chatCompletion:
             citation_content= {"citations": chatCompletion[citations_field_name]}
-            messages.append({ 
+            messages.append({
                 "role": "tool",
                 "content": json.dumps(citation_content)
             })
@@ -202,13 +205,13 @@ def format_pf_non_streaming_response(
         }
         return response_obj
     except Exception as e:
-        logging.error(f"Exception in format_pf_non_streaming_response: {e}")
+        logger.error(f"Exception in format_pf_non_streaming_response: {e}")
         return {}
 
 
 def convert_to_pf_format(input_json, request_field_name, response_field_name):
     output_json = []
-    logging.debug(f"Input json: {input_json}")
+    logger.debug(f"Input json: {input_json}")
     # align the input json to the format expected by promptflow chat flow
     for message in input_json["messages"]:
         if message:
@@ -220,7 +223,7 @@ def convert_to_pf_format(input_json, request_field_name, response_field_name):
                 output_json.append(new_obj)
             elif message["role"] == "assistant" and len(output_json) > 0:
                 output_json[-1]["outputs"][response_field_name] = message["content"]
-    logging.debug(f"PF formatted response: {output_json}")
+    logger.debug(f"PF formatted response: {output_json}")
     return output_json
 
 
@@ -229,4 +232,3 @@ def comma_separated_string_to_list(s: str) -> List[str]:
     Split comma-separated values into a list.
     '''
     return s.strip().replace(' ', '').split(',')
-

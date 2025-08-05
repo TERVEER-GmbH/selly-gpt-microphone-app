@@ -97,6 +97,14 @@ export type UserInfo = {
   user_id: string
 }
 
+export type WhoAmI = {
+  authenticated: boolean
+  user_name:     string
+  email:         string
+  roles:         string[]
+  is_admin:      boolean
+}
+
 export enum CosmosDBStatus {
   NotConfigured = 'CosmosDB is not configured',
   NotWorking = 'CosmosDB is not working',
@@ -155,4 +163,11 @@ export enum Feedback {
   Sexual = 'sexual',
   Manipulative = 'manipulative',
   OtherHarmful = 'other_harmlful'
+}
+
+export interface Prompt {
+  id: string;
+  text: string;
+  golden_answer: string;
+  tags: string[];
 }
