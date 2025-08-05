@@ -1,7 +1,8 @@
 .venv
 frontend/node_modules
 .env
-
+/venv
+app.log
 # static
 .azure/
 __pycache__/
