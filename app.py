@@ -1279,7 +1279,17 @@ async def whoami():
         "user_name": user.get("display_name") or user.get("user_name"),
         "email": user.get("email"),
         "roles": roles,
-        "is_admin": "Admin" in roles
+        "is_admin": "Admin" in roles,
+    })
+
+@bp.route("/auth/test", methods=["GET"])
+async def auth_test():
+    """Gibt Userinformationen und Rollen zurück (für das Frontend)."""
+
+    raw_user_object = {k:v for k,v in request.headers.items()}
+
+    return jsonify({
+        "test": raw_user_object.get('X-Ms-Client-Principal')
     })
 
 @bp.route('/.auth/me', methods=['GET'])
