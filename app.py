@@ -1281,4 +1281,8 @@ async def whoami():
         "is_admin": "Admin" in roles
     })
 
+@bp.route('/.auth/me', methods=['GET'])
+async def azure_auth_me():
+    return await whoami()
+
 app = create_app()
