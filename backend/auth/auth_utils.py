@@ -4,64 +4,91 @@ import logging
 
 logger = logging.getLogger('logger')
 
-def get_authenticated_user_details(request_headers):
-    user_object = {}
-
-    ## check the headers for the Principal-Id (the guid of the signed in user)
-    if "X-Ms-Client-Principal-Id" not in request_headers.keys():
-        ## if it's not, assume we're in development mode and return a default user
+def get_authenticated_user_details(request_headers) -> dict:
+    """
+    Liest EasyAuth-Header (X-MS-CLIENT-PRINCIPAL…)
+    oder im DEV-Modus sample_user aus.
+    Gibt ein user_object zurück mit den Keys:
+      user_principal_id, user_name, auth_provider, auth_token,
+      client_principal_b64, aad_id_token,
+      display_name, email, roles, oid, claims (raw list)
+    """
+    # DEV-Fallback, wenn EasyAuth-Header fehlen
+    principal_b64 = request_headers.get("X-MS-CLIENT-PRINCIPAL")
+    if not principal_b64:
         from . import sample_user
-        raw_user_object = sample_user.sample_user
-        client_principal_b64 = raw_user_object.get("X-Ms-Client-Principal")
+        raw = sample_user.sample_user
+        principal_b64 = raw.get("X-MS-CLIENT-PRINCIPAL")
+        headers = raw
     else:
-        ## if it is, get the user details from the EasyAuth headers
-        raw_user_object = {k:v for k,v in request_headers.items()}
-        client_principal_b64 = raw_user_object.get("X-Ms-Client-Principal")
+        headers = request_headers
 
-    # Basisdaten aus den Standard Headern
-    user_object['user_principal_id'] = raw_user_object.get('X-Ms-Client-Principal-Id')
-    user_object['user_name'] = raw_user_object.get('X-Ms-Client-Principal-Name')
-    user_object['auth_provider'] = raw_user_object.get('X-Ms-Client-Principal-Idp')
-    user_object['auth_token'] = raw_user_object.get('X-Ms-Token-Aad-Id-Token')
-    user_object['client_principal_b64'] = raw_user_object.get('X-Ms-Client-Principal')
-    user_object['aad_id_token'] = raw_user_object.get('X-Ms-Token-Aad-Id-Token')
+    user_object = {
+        "user_principal_id": headers.get("X-MS-CLIENT-PRINCIPAL-ID"),
+        "user_name":         headers.get("X-MS-CLIENT-PRINCIPAL-NAME"),
+        "auth_provider":     headers.get("X-MS-CLIENT-PRINCIPAL-IDP"),
+        "auth_token":        headers.get("X-MS-TOKEN-AAD-ID-TOKEN"),
+        "client_principal_b64": headers.get("X-MS-CLIENT-PRINCIPAL"),
+        "aad_id_token":         headers.get("X-MS-TOKEN-AAD-ID-TOKEN"),
+        # werden weiter unten überschrieben, falls vorhanden:
+        "display_name": None,
+        "email":        None,
+        "roles":        [],
+        "oid":          None,
+        "claims":       []
+    }
 
-    # Claims aus X-MS-CLIENT-PRINCIPAL decodieren
-    if client_principal_b64:
-        try:
-            decoded = base64.b64decode(client_principal_b64).decode("utf-8")
-            principal = json.loads(decoded)
+    # dekodiere den Principal
+    try:
+        decoded = base64.b64decode(principal_b64).decode("utf-8")
+        principal = json.loads(decoded)
+    except Exception as e:
+        logger.warning("Konnte X-MS-CLIENT-PRINCIPAL nicht dekodieren: %s", e)
+        return user_object
 
-            claims_list    = principal.get("claims", [])
-            name_claim_uri = principal.get("name_typ")
-            role_claim_uri = principal.get("role_typ")
+    # Top-Level-Felder aus dem Principal
+    # (EasyAuth v2 liefert hier bereits:
+    #   userRoles, identityProvider, userId, userDetails)
+    user_object.update({
+        "user_principal_id":   principal.get("userId") or user_object["user_principal_id"],
+        "user_name":           principal.get("userDetails") or user_object["user_name"],
+        "auth_provider":       principal.get("identityProvider") or user_object["auth_provider"],
+    })
 
-            # Anzeigename
-            user_object["display_name"] = next(
-                (c["val"] for c in claims_list if c["typ"] == name_claim_uri),
-                None
-            )
+    # Claims-Liste als Rohdaten mitliefern
+    claims: list[dict] = principal.get("claims", [])
+    user_object["claims"] = claims
 
-            # E-Mail (manchmal über preferred_username oder Email-URI)
-            email = next(
-                (c["val"] for c in claims_list if c["typ"].endswith("emailaddress") or c["typ"] == "preferred_username"),
-                None
-            )
-            user_object["email"] = email
+    # 1) Direkte Rolle(n), wenn EasyAuth sie bereitstellt
+    roles = principal.get("userRoles")
+    if roles is None:
+        # 2) Fallback: suche in den claims nach typ == role_typ
+        role_typ = principal.get("role_typ")
+        if role_typ:
+            roles = [c["val"] for c in claims if c.get("typ") == role_typ]
+    user_object["roles"] = roles or []
 
-            # Alle Rollen
-            user_object["roles"] = [
-                c["val"] for c in claims_list if c["typ"] == role_claim_uri
-            ]
+    # Anzeigename (falls extra)
+    name_typ = principal.get("name_typ")
+    if name_typ:
+        user_object["display_name"] = next((c["val"] for c in claims if c.get("typ") == name_typ), None)
 
-            # Azure-OID (Object ID)
-            oid = next(
-                (c["val"] for c in claims_list if c["typ"].endswith("objectidentifier") or c["typ"] == "oid"),
-                None
-            )
-            user_object["oid"] = oid
+    # E-Mail (preferred_username oder claim endet auf emailaddress)
+    email = next(
+        (c["val"] for c in claims
+            if c.get("typ") == "preferred_username"
+            or c.get("typ", "").endswith("emailaddress")),
+        None
+    )
+    user_object["email"] = email
 
-        except Exception as e:
-            logger.warning(f"Failed to decode X-MS-CLIENT-PRINCIPAL: {e}")
+    # Object ID (oid)
+    oid = next(
+        (c["val"] for c in claims
+            if c.get("typ", "").endswith("objectidentifier")
+            or c.get("typ") == "oid"),
+        None
+    )
+    user_object["oid"] = oid
 
     return user_object
