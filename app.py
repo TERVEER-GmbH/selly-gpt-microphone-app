@@ -1274,8 +1274,6 @@ async def whoami():
     user = get_authenticated_user_details(request.headers)
     roles = user.get("roles", []) if user else []
 
-    print(user)
-
     return jsonify({
         "authenticated": user is not None,
         "user_name": user.get("display_name") or user.get("user_name"),
