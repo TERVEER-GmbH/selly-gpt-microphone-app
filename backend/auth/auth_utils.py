@@ -91,4 +91,6 @@ def get_authenticated_user_details(request_headers) -> dict:
     )
     user_object["oid"] = oid
 
+    logger.warning(user_object)
+
     return user_object
