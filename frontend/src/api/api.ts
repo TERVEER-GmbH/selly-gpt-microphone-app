@@ -1,6 +1,6 @@
 import { chatHistorySampleData } from '../constants/chatHistory'
 
-import { ChatMessage, Conversation, ConversationRequest, CosmosDBHealth, CosmosDBStatus, UserInfo, WhoAmI, Prompt } from './models'
+import { ChatMessage, Conversation, ConversationRequest, CosmosDBHealth, CosmosDBStatus, UserInfo, WhoAmI, Prompt, TestParams, RunSummary, RunStatus, TestResult } from './models'
 
 export async function conversationApi(options: ConversationRequest, abortSignal: AbortSignal): Promise<Response> {
   const response = await fetch('/conversation', {
@@ -367,6 +367,10 @@ export const historyMessageFeedback = async (messageId: string, feedback: string
   return response
 }
 
+// ################################ //
+//             Prompts              //
+// ################################ //
+
 // 1. Liste aller Prompts holen
 export async function getAdminPrompts(): Promise<Prompt[]> {
   const res = await fetch('/admin/prompts', { headers: { 'Content-Type': 'application/json' } });
@@ -415,4 +419,61 @@ export async function importPrompts(file: File): Promise<{ errors: any[]; create
     throw new Error(err.error || `Import failed: ${res.status}`);
   }
   return await res.json();
+}
+
+// ################################ //
+//             TestRuns             //
+// ################################ //
+
+export async function testPrompt(
+  runId: string,
+  promptId: string,
+  params?: TestParams
+): Promise<TestResult> {
+  const resp = await fetch(`/admin/runs/${runId}/test/${promptId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ params })
+  });
+  return resp.json();
+}
+
+export async function startRun(
+  promptIds: string[],
+  params: TestParams
+): Promise<string> {
+  const resp = await fetch('/admin/runs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt_ids: promptIds, params })
+  });
+  const { run_id } = await resp.json();
+  return run_id;
+}
+
+/** holt alle Runs (ohne Ergebnisse) */
+export async function getRuns(): Promise<RunSummary[]> {
+  const res = await fetch('/admin/runs', {
+    headers: { 'Content-Type': 'application/json' }
+  });
+  if (!res.ok) throw new Error(`getRuns failed: ${res.status}`);
+  return res.json() as Promise<RunSummary[]>;
+}
+
+/** holt den Status eines einzelnen Runs */
+export async function getRunStatus(runId: string): Promise<RunStatus> {
+  const res = await fetch(`/admin/runs/${runId}/status`, {
+    headers: { 'Content-Type': 'application/json' }
+  });
+  if (!res.ok) throw new Error(`getRunStatus failed: ${res.status}`);
+  return res.json() as Promise<RunStatus>;
+}
+
+/** holt alle TestResults zu einem Run */
+export async function getRunResults(runId: string): Promise<TestResult[]> {
+  const res = await fetch(`/admin/runs/${runId}/results`, {
+    headers: { 'Content-Type': 'application/json' }
+  });
+  if (!res.ok) throw new Error(`getRunResults failed: ${res.status}`);
+  return res.json() as Promise<TestResult[]>;
 }

@@ -171,3 +171,39 @@ export interface Prompt {
   golden_answer: string;
   tags: string[];
 }
+
+export interface TestParams {
+  model: string;
+  temperature: number;
+  max_tokens: number;
+  top_p?: number;
+}
+
+export interface TestResult {
+  id: string;
+  prompt_id: string;
+  prompt_text: string;
+  ai_response: string;
+  golden_answer: string;
+  timestamp: string;
+}
+
+export interface RunSummary {
+  id: string;
+  prompt_ids: string[];
+  params: TestParams;
+  status: 'Pending' | 'Running' | 'Done';
+  created_at: string;
+  // results fehlt hier bewusst, kommt erst in der Detail-API
+}
+
+// bereits vorhanden: RunStatus für /status
+export interface RunStatus {
+  run_id: string;
+  prompt_ids: string[];
+  params: TestParams;
+  status: 'Pending' | 'Running' | 'Done';
+  total: number;
+  completed: number;
+  created_at: string;
+}

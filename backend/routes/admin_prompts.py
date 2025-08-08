@@ -3,14 +3,14 @@ import logging
 
 from quart import Blueprint, request, jsonify, current_app
 from backend.security.role_decorator import require_role
-from backend.db.init_clients import cosmos_prompt_db_ready
+from backend.db.init_clients import cosmos_admin_db_ready
 
 logger = logging.getLogger('logger')
 
-admin_bp = Blueprint("admin_prompts", __name__, url_prefix="/admin/prompts")
+prompts_bp = Blueprint("admin_prompts", __name__, url_prefix="/admin/prompts")
 
 
-@admin_bp.route("", methods=["GET"])
+@prompts_bp.route("", methods=["GET"])
 @require_role("Admin")
 async def list_prompts():
     """
@@ -18,23 +18,23 @@ async def list_prompts():
     Liefert eine Liste aller in der Prompts-Collection gespeicherten Prompts zurück.
     Nur für Admin-User verfügbar.
 
-    Wartet auf erfolgreiche Initialisierung des Cosmos-Prompt-Clients.
-    Gibt 404 zurück, wenn kein Prompt-Client konfiguriert ist.
+    Wartet auf erfolgreiche Initialisierung des Cosmos-Admin-Clients.
+    Gibt 404 zurück, wenn kein Admin-Client konfiguriert ist.
     """
     logger.info("Admin requests list of prompts")
-    await cosmos_prompt_db_ready.wait()
+    await cosmos_admin_db_ready.wait()
 
-    client = current_app.cosmos_prompt_client
+    client = current_app.cosmos_admin_client
     if client is None:
-        logger.warning("Prompt-Client nicht konfiguriert – list_prompts bricht ab")
-        return jsonify({"error": "Prompt-DB nicht konfiguriert"}), 404
+        logger.warning("Admin-Client nicht konfiguriert – list_prompts bricht ab")
+        return jsonify({"error": "Admin-DB nicht konfiguriert"}), 404
 
     prompts = await client.list_prompts()
     logger.info("Returning %d prompts", len(prompts))
     return jsonify([p.to_dict() for p in prompts]), 200
 
 
-@admin_bp.route("", methods=["POST"])
+@prompts_bp.route("", methods=["POST"])
 @require_role("Admin")
 async def create_prompt():
     """
@@ -50,15 +50,15 @@ async def create_prompt():
     }
 
     Validiert Pflichtfelder und gibt 400 bei fehlenden Feldern zurück.
-    Gibt 404, wenn kein Prompt-Client konfiguriert ist.
+    Gibt 404, wenn kein Admin-Client konfiguriert ist.
     """
     logger.info("Admin erstellt neuen Prompt")
-    await cosmos_prompt_db_ready.wait()
+    await cosmos_admin_db_ready.wait()
 
-    client = current_app.cosmos_prompt_client
+    client = current_app.cosmos_admin_client
     if client is None:
-        logger.warning("Prompt-Client nicht konfiguriert – create_prompt bricht ab")
-        return jsonify({"error": "Prompt-DB nicht konfiguriert"}), 404
+        logger.warning("Admin-Client nicht konfiguriert – create_prompt bricht ab")
+        return jsonify({"error": "Admin-DB nicht konfiguriert"}), 404
 
     data = await request.get_json()
     if not data or "text" not in data or "golden_answer" not in data:
@@ -79,7 +79,7 @@ async def create_prompt():
         return jsonify({"error": "Could not create prompt"}), 500
 
 
-@admin_bp.route("/<id>", methods=["PUT"])
+@prompts_bp.route("/<id>", methods=["PUT"])
 @require_role("Admin")
 async def update_prompt(id: str):
     """
@@ -95,15 +95,15 @@ async def update_prompt(id: str):
     }
 
     Validiert Pflichtfelder und gibt 400 bei fehlenden Feldern zurück.
-    Gibt 404, wenn Prompt nicht existiert oder kein Prompt-Client konfiguriert ist.
+    Gibt 404, wenn Prompt nicht existiert oder kein Admin-Client konfiguriert ist.
     """
     logger.info("Admin aktualisiert Prompt %s", id)
-    await cosmos_prompt_db_ready.wait()
+    await cosmos_admin_db_ready.wait()
 
-    client = current_app.cosmos_prompt_client
+    client = current_app.cosmos_admin_client
     if client is None:
-        logger.warning("Prompt-Client nicht konfiguriert – update_prompt bricht ab")
-        return jsonify({"error": "Prompt-DB nicht konfiguriert"}), 404
+        logger.warning("Admin-Client nicht konfiguriert – update_prompt bricht ab")
+        return jsonify({"error": "Admin-DB nicht konfiguriert"}), 404
 
     data = await request.get_json()
     if not data or "text" not in data or "golden_answer" not in data:
@@ -125,7 +125,7 @@ async def update_prompt(id: str):
         return jsonify({"error": str(e)}), 404
 
 
-@admin_bp.route("/<id>", methods=["DELETE"])
+@prompts_bp.route("/<id>", methods=["DELETE"])
 @require_role("Admin")
 async def delete_prompt(id: str):
     """
@@ -133,15 +133,15 @@ async def delete_prompt(id: str):
     Löscht den Prompt mit der angegebenen ID.
     Nur für Admin-User verfügbar.
 
-    Gibt 404 zurück, wenn Prompt nicht existiert oder kein Prompt-Client konfiguriert ist.
+    Gibt 404 zurück, wenn Prompt nicht existiert oder kein Admin-Client konfiguriert ist.
     """
     logger.info("Admin löscht Prompt %s", id)
-    await cosmos_prompt_db_ready.wait()
+    await cosmos_admin_db_ready.wait()
 
-    client = current_app.cosmos_prompt_client
+    client = current_app.cosmos_admin_client
     if client is None:
-        logger.warning("Prompt-Client nicht konfiguriert – delete_prompt bricht ab")
-        return jsonify({"error": "Prompt-DB nicht konfiguriert"}), 404
+        logger.warning("Admin-Client nicht konfiguriert – delete_prompt bricht ab")
+        return jsonify({"error": "Admin-DB nicht konfiguriert"}), 404
 
     try:
         await client.delete_prompt(prompt_id=id)
@@ -152,7 +152,7 @@ async def delete_prompt(id: str):
         logger.exception("Fehler beim Löschen des Prompts %s", id)
         return jsonify({"error": str(e)}), 404
 
-@admin_bp.route("/import", methods=["POST"])
+@prompts_bp.route("/import", methods=["POST"])
 @require_role("Admin")
 async def import_prompts():
     """
@@ -172,12 +172,12 @@ async def import_prompts():
       }
     """
     logger.info("Admin importiert Prompts via Datei-Upload")
-    await cosmos_prompt_db_ready.wait()
+    await cosmos_admin_db_ready.wait()
 
-    client = current_app.cosmos_prompt_client
+    client = current_app.cosmos_admin_client
     if client is None:
-        logger.warning("Prompt-Client nicht konfiguriert – import_prompts bricht ab")
-        return jsonify({"error": "Prompt-DB nicht konfiguriert"}), 404
+        logger.warning("Admin-Client nicht konfiguriert – import_prompts bricht ab")
+        return jsonify({"error": "Admin-DB nicht konfiguriert"}), 404
 
     upload = (await request.files).get("file")
     if not upload:

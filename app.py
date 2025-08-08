@@ -43,10 +43,12 @@ from backend.utils import (
 )
 from backend.db.init_clients import (
     init_cosmos_history_client,
-    init_cosmos_prompt_client,
+    init_cosmos_admin_client,
     cosmos_history_db_ready,
-    cosmos_prompt_db_ready,
+    cosmos_admin_db_ready,
+
 )
+from backend.tasks.batch_runner import background_runner
 import tempfile
 import azure.cognitiveservices.speech as speechsdk
 import ffmpeg
@@ -56,7 +58,8 @@ import pandas as pd
 import certifi
 from azure.core.pipeline.transport import AioHttpTransport
 
-from backend.routes.admin_prompts import admin_bp as admin_prompts_bp
+from backend.routes.admin_prompts import prompts_bp
+from backend.routes.admin_runs import runs_bp
 
 logger = logging.getLogger('logger')
 logger.setLevel(logging.DEBUG)
@@ -91,7 +94,6 @@ AZURE_RESULTS_BLOB_NAME = os.getenv("AZURE_RESULTS_BLOB_NAME")
 bp = Blueprint("routes", __name__)
 
 
-
 def create_app():
     static_dir = os.path.join(BASE_DIR, "static")        # backend/static
     app = Quart(
@@ -103,8 +105,9 @@ def create_app():
 
     # Alle existierenden Endpoints
     app.register_blueprint(bp)
-    # Admin Prompt Endpoints /admin/prompts
-    app.register_blueprint(admin_prompts_bp)
+    # Admin Prompt Endpoints /admin/prompts & /admin/runs
+    app.register_blueprint(prompts_bp)
+    app.register_blueprint(runs_bp)
 
     app.config["TEMPLATES_AUTO_RELOAD"] = True
 
@@ -122,12 +125,17 @@ def create_app():
 
         # Prompt-Client initialisieren
         try:
-            app.cosmos_prompt_client = await init_cosmos_prompt_client()
-            cosmos_prompt_db_ready.set()
+            app.cosmos_prompt_client = await init_cosmos_admin_client()
+            cosmos_admin_db_ready.set()
             logger.info("Cosmos Prompt Client ready")
         except Exception as e:
             logger.exception("Failed to initialize Cosmos Prompt client")
             raise e
+
+    @app.before_serving
+    async def start_background_runner():
+        # wartet intern auf cosmos_admin_db_ready
+        asyncio.create_task(background_runner())
 
     return app
 
@@ -139,6 +147,8 @@ async def index():
         title=app_settings.ui.title,
         favicon=app_settings.ui.favicon
     )
+
+
 
 
 # the SDK will call our methods whenever it needs more audio samples
@@ -247,78 +257,78 @@ async def transcribe():
 # async def assets(path):
 #     return await send_from_directory("static/assets", path)
 
-@bp.route("/evaluate", methods=["POST"])
-async def evaluate():
-    file_path = os.path.join(os.path.dirname(__file__), "sample_prompts.csv")
-    result_rows = []
+# @bp.route("/evaluate", methods=["POST"])
+# async def evaluate():
+#     file_path = os.path.join(os.path.dirname(__file__), "sample_prompts.csv")
+#     result_rows = []
 
-    try:
-        with open(file_path, newline='', encoding='utf-8') as csvfile:
-            reader = csv.DictReader(csvfile)
-            for idx,row in enumerate(reader):
-                # if idx >= 20: #for testing first
-                #     break
-                question = row['Question']
-                expected_answer = row['ExpectedAnswer']
-                logger.info(f"Processing question {idx+1}: {question}")
-                request_body = {
-                    "messages": [{
-                        "role": "user",
-                        "content": question
-                    }]
-                }
+#     try:
+#         with open(file_path, newline='', encoding='utf-8') as csvfile:
+#             reader = csv.DictReader(csvfile)
+#             for idx,row in enumerate(reader):
+#                 # if idx >= 20: #for testing first
+#                 #     break
+#                 question = row['Question']
+#                 expected_answer = row['ExpectedAnswer']
+#                 logger.info(f"Processing question {idx+1}: {question}")
+#                 request_body = {
+#                     "messages": [{
+#                         "role": "user",
+#                         "content": question
+#                     }]
+#                 }
 
-                try:
-                    response = await complete_chat_request(request_body, request.headers)
-                    #logger.info(f"raw response: {response}") #gives everything
+#                 try:
+#                     response = await complete_chat_request(request_body, request.headers)
+#                     #logger.info(f"raw response: {response}") #gives everything
 
-                    choices = response.get("choices", [])
-                    if choices:
-                        messages = choices[0].get("messages", [])
-                        generated_answer = messages[-1].get("content", "") if messages else ""
-                    else:
-                        generated_answer = ""
+#                     choices = response.get("choices", [])
+#                     if choices:
+#                         messages = choices[0].get("messages", [])
+#                         generated_answer = messages[-1].get("content", "") if messages else ""
+#                     else:
+#                         generated_answer = ""
 
-                    logger.info(f"Generated answer for question {idx+1}: {generated_answer}")
-                except Exception as e:
-                    logger.error(f"Failed to get response for question {idx+1}: {e}")
-                    generated_answer = "ERROR"
-
-
-                result_rows.append({
-                    "question": question,
-                    "generated_answer": generated_answer,
-                    "expected_answer": expected_answer
-                })
-
-                await asyncio.sleep(15) #so that we don't get overload
-
-        if not AZURE_STORAGE_CONNECTION_STRING:
-            raise ValueError("Plese set Storage Connection String")
-
-        #save to CSV
-        results_df = pd.DataFrame(result_rows)
-        results_csv_path = os.path.join(tempfile.gettempdir(), "results.csv")
-        results_df.to_csv(results_csv_path, index=False)
-
-        transport = AioHttpTransport(connection_verify=certifi.where()) #so that our venv could find the certificate
-
-        #Upload to Azure blob
-        service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING, transport=transport)
-        container_name = AZURE_RESULTS_CONTAINER
-        virtual_dir = "golden_cases/results.csv"
-        client = service_client.get_blob_client(container=container_name, blob=virtual_dir)
-
-        with open(results_csv_path, "rb") as f:
-            await client.upload_blob(f, overwrite=True) # if a blob witht the same name already exists then overwrite it!!
-        logger.info("uploaded to Azure Blob Storge")
-
-        return await send_file(results_csv_path, as_attachment=True, attachment_filename="results.csv") #so that we get the result.csv locally too
+#                     logger.info(f"Generated answer for question {idx+1}: {generated_answer}")
+#                 except Exception as e:
+#                     logger.error(f"Failed to get response for question {idx+1}: {e}")
+#                     generated_answer = "ERROR"
 
 
-    except Exception as e:
-        logger.exception("Error during chatbot evaluation")
-        return jsonify({"error": str(e)}), 500
+#                 result_rows.append({
+#                     "question": question,
+#                     "generated_answer": generated_answer,
+#                     "expected_answer": expected_answer
+#                 })
+
+#                 await asyncio.sleep(15) #so that we don't get overload
+
+#         if not AZURE_STORAGE_CONNECTION_STRING:
+#             raise ValueError("Plese set Storage Connection String")
+
+#         #save to CSV
+#         results_df = pd.DataFrame(result_rows)
+#         results_csv_path = os.path.join(tempfile.gettempdir(), "results.csv")
+#         results_df.to_csv(results_csv_path, index=False)
+
+#         transport = AioHttpTransport(connection_verify=certifi.where()) #so that our venv could find the certificate
+
+#         #Upload to Azure blob
+#         service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING, transport=transport)
+#         container_name = AZURE_RESULTS_CONTAINER
+#         virtual_dir = "golden_cases/results.csv"
+#         client = service_client.get_blob_client(container=container_name, blob=virtual_dir)
+
+#         with open(results_csv_path, "rb") as f:
+#             await client.upload_blob(f, overwrite=True) # if a blob witht the same name already exists then overwrite it!!
+#         logger.info("uploaded to Azure Blob Storge")
+
+#         return await send_file(results_csv_path, as_attachment=True, attachment_filename="results.csv") #so that we get the result.csv locally too
+
+
+#     except Exception as e:
+#         logger.exception("Error during chatbot evaluation")
+#         return jsonify({"error": str(e)}), 500
 
 # # Debug settings
 # DEBUG = os.environ.get("DEBUG", "false")

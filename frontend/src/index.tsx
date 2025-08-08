@@ -2,13 +2,18 @@ import CssBaseline from '@mui/material/CssBaseline';
 
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { HashRouter, Route, Routes } from 'react-router-dom'
+import { HashRouter, Route, Routes, Navigate, Outlet } from 'react-router-dom'
 import { initializeIcons } from '@fluentui/react'
 
 import Chat from './pages/chat/Chat'
 import Layout from './pages/layout/Layout'
 import NoPage from './pages/NoPage'
 import AdminPromptsPage from './pages/admin/AdminPromptsPage'
+import RunsOverviewPage from './pages/admin/RunsOverviewPage'
+import RunDetailPage from './pages/admin/RunDetailPage'
+
+import AdminLayout from './components/admin/AdminLayout'
+
 import { RequireAdmin }   from './components/common/RequireAdmin'
 
 import { AppStateProvider } from './state/AppProvider'
@@ -41,30 +46,45 @@ export default function App() {
     <AppStateProvider>
       <HashRouter>
         <Routes>
+          {/* öffentlicher Bereich */}
           <Route path="/" element={<Layout />}>
+            {/* Chat‐Startseite */}
             <Route index element={<Chat />} />
-            <Route path="*" element={<NoPage />} />
 
-            {/* neue geschützte Admin-Route */}
+            {/* Admin‐Bereich, geschützt */}
             <Route
-              path="admin/prompts"
+              path="admin"
               element={
                 <RequireAdmin>
+                  <AdminLayout />
+                </RequireAdmin>
+              }
+            >
+              {/* Default‐Redirect von /#/admin → /#/admin/prompts */}
+              <Route index element={<Navigate to="prompts" replace />} />
+
+              {/* /#/admin/prompts */}
+              <Route
+                path="prompts"
+                element={
                   <AdminPromptProvider>
                     <AdminPromptsPage />
                   </AdminPromptProvider>
-                </RequireAdmin>
-              }
-            />
+                }
+              />
+
+              {/* /#/admin/runs */}
+              <Route path="runs" element={<RunsOverviewPage />} />
+
+              {/* /#/admin/runs/:runId */}
+              <Route path="runs/:runId" element={<RunDetailPage />} />
+            </Route>
+
+            {/* Fallback */}
+            <Route path="*" element={<NoPage />} />
           </Route>
         </Routes>
       </HashRouter>
     </AppStateProvider>
   )
 }
-
-// ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
-//   <React.StrictMode>
-//     <App />
-//   </React.StrictMode>
-// )

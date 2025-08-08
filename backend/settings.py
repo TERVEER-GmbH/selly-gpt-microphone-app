@@ -66,9 +66,9 @@ class _ChatHistorySettings(BaseSettings):
     conversations_container: str
     enable_feedback: bool = False
 
-class _PromptDbSettings(BaseSettings):
+class _AdminDbSettings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="AZURE_PROMPTDB_",
+        env_prefix="AZURE_ADMINDB_",
         env_file=DOTENV_PATH,
         extra="ignore",
         env_ignore_empty=True
@@ -77,7 +77,9 @@ class _PromptDbSettings(BaseSettings):
     account: str
     database: str
     account_key: Optional[str] = None
-    prompts_container: str
+    prompt_container: str
+    run_container: str
+    result_container: str
 
 class _PromptflowSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -784,7 +786,7 @@ class _AppSettings(BaseModel):
 
     # Constructed properties
     chat_history: Optional[_ChatHistorySettings] = None
-    prompt_db:   Optional[_PromptDbSettings]     = None
+    admin_db:   Optional[_AdminDbSettings]     = None
     datasource: Optional[DatasourcePayloadConstructor] = None
     promptflow: Optional[_PromptflowSettings] = None
 
@@ -809,11 +811,11 @@ class _AppSettings(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def set_prompt_db_settings(self) -> Self:
+    def set_admin_db_settings(self) -> Self:
         try:
-            self.prompt_db = _PromptDbSettings()
+            self.admin_db = _AdminDbSettings()
         except ValidationError:
-            self.prompt_db = None
+            self.admin_db = None
         return self
 
     @model_validator(mode="after")
