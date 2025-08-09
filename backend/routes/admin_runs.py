@@ -4,6 +4,8 @@ import uuid, logging
 from quart import Blueprint, request, jsonify, current_app
 from backend.security.role_decorator import require_role
 from backend.models.testrun import TestParams, TestResult
+from backend.services.ai_client import call_ai_model
+from backend.services.comparator import compare_answers
 from backend.db.init_clients import cosmos_admin_db_ready
 
 logger = logging.getLogger("logger")
@@ -115,6 +117,7 @@ async def test_single(run_id, prompt_id):
     await cosmos_admin_db_ready.wait()
     params = TestParams(**(await request.get_json() or {}).get("params", {}))
     client = current_app.cosmos_admin_client
+    prompt = await client.get_prompt(prompt_id)
 
     # Wenn Run nicht existiert, erst anlegen
     try:
@@ -122,14 +125,41 @@ async def test_single(run_id, prompt_id):
     except:
         await client.start_run([prompt_id], params)
 
-    # synchron abarbeiten
-    await client.run_tests(run_id, [prompt_id], params)
-    results = await client.list_results(run_id)
-    # single prompt -> erstes Element
-    res = results[0] if results else None
-    if not res:
-        return jsonify({"error":"No result"}), 500
-    return jsonify(res.to_dict()), 200
+    # 1) AI-Antwort holen
+    ai_resp = await call_ai_model(prompt.text, params)
+
+    # 2) automatischer Vergleich
+    comp = await compare_answers(
+        ai_answer=ai_resp,
+        golden_answer=prompt.golden_answer,
+        params=params
+    )
+
+    # 3) TestResult befüllen – inkl. Scores & Kommentare
+    result = TestResult(
+        id=str(uuid.uuid4()),
+        run_id=run_id,
+        prompt_id=prompt.id,
+        prompt_text=prompt.text,
+        ai_response=ai_resp,
+        golden_answer=prompt.golden_answer
+    )
+    # Scores
+    result.relevance                 = comp.relevance
+    result.relevance_comment         = comp.relevance_comment
+    result.factual_accuracy          = comp.factual_accuracy
+    result.factual_accuracy_comment  = comp.factual_accuracy_comment
+    result.completeness              = comp.completeness
+    result.completeness_comment      = comp.completeness_comment
+    result.tone                      = comp.tone
+    result.tone_comment              = comp.tone_comment
+    result.comprehensibility         = comp.comprehensibility
+    result.comprehensibility_comment = comp.comprehensibility_comment
+    result.overall_comment           = comp.overall_comment
+
+    # 4) speichern und zurückgeben
+    await client.add_result(run_id, result)
+    return jsonify(result.to_dict()), 200
 
 @runs_bp.route("/<run_id>/results", methods=["GET"])
 @require_role("Admin")

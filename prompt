@@ -1,0 +1,763 @@
+Ich muss ich dich nochmal bitte die Integration in die bestehenden Flows zu wiederholen, da der Code einen anderen Stand hat, als du angenommen hast:
+
+backend/routes/admin_runs.py
+"""
+# backend/routes/admin_runs.py
+
+import uuid, logging
+from quart import Blueprint, request, jsonify, current_app
+from backend.security.role_decorator import require_role
+from backend.models.testrun import TestParams, TestResult
+from backend.db.init_clients import cosmos_admin_db_ready
+
+logger = logging.getLogger("logger")
+runs_bp = Blueprint("admin_runs", __name__, url_prefix="/admin/runs")
+
+@runs_bp.route("", methods=["GET"])
+@require_role("Admin")
+async def list_runs():
+    """
+    GET /admin/runs
+    -> [{ id, prompt_ids, params, status, created_at }]
+    """
+    await cosmos_admin_db_ready.wait()
+
+    try:
+        runs = await current_app.cosmos_admin_client.list_runs()
+        return jsonify([r.to_dict() for r in runs]), 200
+    except Exception:
+        logger.exception("list_runs: Fehler",)
+        return jsonify({"error":"Could not fetch runs"}), 500
+
+@runs_bp.route("", methods=["POST"])
+@require_role("Admin")
+async def start_run():
+    """
+    POST /admin/runs
+    Body: { prompt_ids: [...], params: {...} }
+    -> { run_id }
+    """
+    await cosmos_admin_db_ready.wait()
+    data = await request.get_json()
+    prompt_ids = data.get("prompt_ids", [])
+    params = TestParams(**data.get("params", {}))
+    run_id = await current_app.cosmos_admin_client.start_run(prompt_ids, params)
+    return jsonify({"run_id": run_id}), 201
+
+@runs_bp.route("/<run_id>/status", methods=["GET"])
+@require_role("Admin")
+async def get_status(run_id):
+    """
+    GET /admin/runs/<run_id>/status
+    {
+        id: string,
+        prompt_ids: string[],
+        params: { model, temperature, max_tokens, top_p? },
+        status: "Pending"|"Running"|"Done",
+        total: number,
+        completed: number,
+        created_at: string
+    }
+    """
+    await cosmos_admin_db_ready.wait()
+    try:
+        client = current_app.cosmos_admin_client
+
+        # 1) Lauf-Metadaten holen
+        run = await client.get_run(run_id)
+
+        # 2) Completed count aus dem result-Container ermitteln (partitioniert nach run_id)
+        count_query = "SELECT VALUE COUNT(1) FROM c WHERE c.run_id = @run_id"
+        completed = 0
+        iterator = client.result_container.query_items(
+            query=count_query,
+            parameters=[{"name": "@run_id", "value": run_id}],
+            partition_key=run_id
+        )
+        async for cnt in iterator:
+            completed = cnt
+
+        # 3) Response mit allen Feldern
+        return jsonify({
+            "run_id":     run.id,
+            "prompt_ids": run.prompt_ids,
+            "params":     run.params.to_dict(),
+            "status":     run.status,
+            "total":      len(run.prompt_ids),
+            "completed":  completed,
+            "created_at": run.created_at
+        }), 200
+
+    except Exception:
+        logger.exception("Error fetching run status %s", run_id)
+        return jsonify({"error": "Could not fetch status"}), 500
+
+@runs_bp.route("/<run_id>/results", methods=["GET"])
+@require_role("Admin")
+async def get_results(run_id):
+    """
+    GET /admin/runs/<run_id>/results
+    -> [{ id, prompt_id, prompt_text, ai_response, golden_answer, timestamp, run_id }]
+    """
+    await cosmos_admin_db_ready.wait()
+    try:
+        results = await current_app.cosmos_admin_client.list_results(run_id)
+        return jsonify([r.to_dict() for r in results]), 200
+    except Exception:
+        logger.exception("get_results: Fehler bei %s", run_id)
+        return jsonify({"error":"Could not fetch results"}), 500
+
+@runs_bp.route("/<run_id>/test/<prompt_id>", methods=["POST"])
+@require_role("Admin")
+async def test_single(run_id, prompt_id):
+    """
+    wird jetzt eigentlich nur noch zum Inkrementellen Testen benutzt,
+    aber im Prinzip genauso wie ein Batch.
+    Wenn du hier sofort das Ergebnis zurückgeben willst,
+    kannst du synchron client.run_tests mit [prompt_id] aufrufen.
+    """
+    await cosmos_admin_db_ready.wait()
+    params = TestParams(**(await request.get_json() or {}).get("params", {}))
+    client = current_app.cosmos_admin_client
+
+    # Wenn Run nicht existiert, erst anlegen
+    try:
+        await client.get_run(run_id)
+    except:
+        await client.start_run([prompt_id], params)
+
+    # synchron abarbeiten
+    await client.run_tests(run_id, [prompt_id], params)
+    results = await client.list_results(run_id)
+    # single prompt -> erstes Element
+    res = results[0] if results else None
+    if not res:
+        return jsonify({"error":"No result"}), 500
+    return jsonify(res.to_dict()), 200
+
+@runs_bp.route("/<run_id>/results", methods=["GET"])
+@require_role("Admin")
+async def list_results(run_id):
+    await cosmos_admin_db_ready.wait()
+    try:
+        results = await current_app.cosmos_admin_client.list_results(run_id)
+        return jsonify([r.to_dict() for r in results]), 200
+    except Exception:
+        logger.exception("Error fetching results for run %s", run_id)
+        return jsonify({"error": "Could not fetch results"}), 500
+"""
+
+backend/services/comparator.py:
+"""
+# backend/services/comparator.py
+import json
+import logging
+
+from backend.models.testrun import ComparisonResult
+from backend.models.testrun import TestParams
+from backend.services.ai_client import call_ai_model
+
+logger = logging.getLogger('logger')
+
+# System-Prompt für die automatische Bewertung
+_COMPARATOR_SYSTEM_PROMPT = """
+You are an expert evaluator. Compare the AI answer against the golden (correct) answer.
+For each of the following five categories, assign a score between 0.0 and 1.0 (higher is better),
+and provide a brief comment explaining your assessment.
+
+Categories:
+1) relevance
+2) factual_accuracy
+3) completeness
+4) tone
+5) comprehensibility
+
+Return your output as a single JSON object with the keys:
+- relevance (float)
+- relevance_comment (string)
+- factual_accuracy (float)
+- factual_accuracy_comment (string)
+- completeness (float)
+- completeness_comment (string)
+- tone (float)
+- tone_comment (string)
+- comprehensibility (float)
+- comprehensibility_comment (string)
+- overall_comment (string), optional summary
+
+Ensure the JSON is valid and nothing else is output.
+"""
+
+async def compare_answers(ai_answer: str, golden_answer: str, params: TestParams) -> ComparisonResult:
+    """
+    Ruft OpenAI auf, um AI-Response und Golden-Answer automatisch
+    in fünf Kategorien zu bewerten.
+    """
+    # 1) Baue Prompt
+    user_payload = {
+        "ai_answer": ai_answer,
+        "golden_answer": golden_answer
+    }
+    full_input = _COMPARATOR_SYSTEM_PROMPT + "\n\n" + json.dumps(user_payload)
+
+    # 2) Call AI
+    try:
+        response = await call_ai_model(full_input, params)
+    except Exception as e:
+        logger.error("compare_answers: AI-Call failed: %s", e, exc_info=True)
+        raise
+
+    # 3) Parse JSON
+    try:
+        data = json.loads(response)
+    except Exception as e:
+        logger.error("compare_answers: Failed to parse JSON from AI response %r: %s", response, e)
+        raise
+
+    # 4) Build ComparisonResult
+    return ComparisonResult.from_dict(data)
+"""
+
+backend/tasks/batch_runner.py:
+"""
+import asyncio
+import logging
+from quart import current_app
+from backend.db.init_clients import cosmos_admin_db_ready
+
+logger = logging.getLogger("logger")
+
+async def background_runner():
+    await cosmos_admin_db_ready.wait()
+    client = current_app.cosmos_admin_client
+
+    while True:
+        try:
+            pending = await client.list_runs(status="Pending")
+            for run in pending:
+                # Starte im Hintergrund _denselben_ run_tests-Code
+                asyncio.create_task(
+                    client.run_tests(run.id, run.prompt_ids, run.params)
+                )
+        except Exception:
+            logger.exception("Background‐Runner: unerwarteter Fehler")
+        await asyncio.sleep(10)
+"""
+
+admin_client.py:
+"""
+import csv, json
+import uuid
+import logging
+from dataclasses import asdict
+from datetime import datetime, timezone
+from .base_cosmos import BaseCosmosClient
+from typing import Tuple, List, IO, Optional, Callable, Awaitable
+
+from azure.cosmos.exceptions import CosmosHttpResponseError
+
+from backend.models.prompt import Prompt
+from backend.models.testrun import TestRun, TestResult, TestParams
+
+logger = logging.getLogger('logger')
+
+class CosmosAdminClient(BaseCosmosClient):
+    def __init__(self, endpoint, credential, database_name,
+                 prompt_container="prompts", run_container="testruns", result_container="testresults"):
+        super().__init__(endpoint, credential, database_name)
+        self.prompt_container = self.database.get_container_client(prompt_container)
+        self.run_container    = self.database.get_container_client(run_container)
+        self.result_container = self.database.get_container_client(result_container)
+
+    # ------------------------------------------------------------
+    # Prompts-CRUD (unchanged)
+    # ------------------------------------------------------------
+
+
+    async def get_prompt(self, prompt_id: str) -> Prompt:
+        doc = await self.prompt_container.read_item(
+            item=prompt_id,
+            partition_key=prompt_id
+        )
+        return Prompt.from_dict(doc)
+
+    async def list_prompts(self) -> List[Prompt]:
+        """
+        Gibt alle Prompts als Domain-Modelle zurück und filtert
+        automatisch alle Cosmos-Systemfelder raus.
+        """
+        prompts: List[Prompt] = []
+        async for item in self.prompt_container.read_all_items():
+            # Prompt.from_dict filtert id, text, golden_answer, tags
+            prompts.append(Prompt.from_dict(item))
+        return prompts
+
+    async def create_prompt(self, text: str, golden_answer: str, tags: list[str]) -> Prompt:
+        p = Prompt.create(text, golden_answer, tags)
+        # prompt.id ist schon das Partition-Key-Feld
+        await self.prompt_container.upsert_item(p.to_dict())
+        return p
+
+    async def update_prompt(self, prompt_id: str, text: str, golden_answer: str, tags: list[str]) -> Prompt:
+        # Lade erst das bestehende Dokument
+        doc = await self.prompt_container.read_item(item=prompt_id, partition_key=prompt_id)
+        # Aktualisiere die Felder
+        doc["text"] = text
+        doc["golden_answer"] = golden_answer
+        doc["tags"] = tags
+        # Und upserte es
+        await self.prompt_container.upsert_item(doc)
+        return Prompt.from_dict(doc)
+
+    async def delete_prompt(self, prompt_id: str) -> None:
+        await self.prompt_container.delete_item(item=prompt_id, partition_key=prompt_id)
+
+    async def import_prompts(self, stream: IO, content_type: str) -> Tuple[List[dict], List[Prompt]]:
+        """
+        Importiere Prompts aus CSV oder JSON.
+        Liefert (errors, created_prompts).
+        """
+        errors: List[dict] = []
+        created: List[Prompt] = []
+
+        # 1) Rohdaten einlesen
+        if "json" in content_type:
+            try:
+                data = json.load(stream)
+                if not isinstance(data, list):
+                    raise ValueError("JSON muss ein Array von Objekten sein")
+            except Exception as ex:
+                raise ValueError(f"Ungültiges JSON: {ex}")
+        else:
+            reader = csv.DictReader(stream)
+            data = list(reader)
+
+        # 2) Zeilen durchlaufen
+        for idx, row in enumerate(data, start=1):
+            try:
+                # Core-Felder extrahieren
+                text   = row.get("text") or row.get("prompt_text")
+                golden = row.get("golden_answer")
+                if not text or not golden:
+                    raise ValueError("Feld 'text' und 'golden_answer' sind erforderlich")
+
+                # Tags parsen
+                tags_field = row.get("tags", "")
+                tags = (
+                    [t.strip() for t in tags_field.split(",")]
+                    if isinstance(tags_field, str) and tags_field
+                    else row.get("tags", [])
+                )
+
+                # ID aus Import beibehalten oder neu generieren
+                provided_id = row.get("id")
+                if provided_id:
+                    # direkt upserten
+                    prompt = Prompt(id=provided_id, text=text, golden_answer=golden, tags=tags)
+                    await self.prompt_container.upsert_item(prompt.to_dict())
+                else:
+                    # create_prompt generiert neue ID und speichert
+                    prompt = await self.create_prompt(text, golden, tags)
+
+                created.append(prompt)
+
+            except Exception as ex:
+                errors.append({"line": idx, "error": str(ex)})
+
+        return errors, created
+
+    # ------------------------------------------------------------
+    # TestRuns & TestResults
+    # ------------------------------------------------------------
+
+    async def start_run(self, prompt_ids: List[str], params: TestParams) -> str:
+        run_id = str(uuid.uuid4())
+        run = TestRun(
+            id=run_id,
+            prompt_ids=prompt_ids,
+            params=params,
+            status="Pending",
+            created_at=datetime.now(timezone.utc).isoformat()
+        )
+        try:
+            # create_item nutzt automatisch `id` als Partition-Key
+            await self.run_container.create_item(run.to_dict())
+            logger.debug("start_run: Created TestRun %s", run_id)
+        except Exception as e:
+            logger.exception("start_run: Failed to create TestRun %s", run_id)
+            raise
+        return run_id
+
+    async def get_run(self, run_id: str) -> TestRun:
+        """
+        Liefert die Metadaten (ohne embedded results) aus dem Run-Container
+        und hängt per list_results die echten Ergebnisse aus testresults an.
+        """
+        try:
+            doc = await self.run_container.read_item(item=run_id, partition_key=run_id)
+            run = TestRun.from_dict(doc)
+        except Exception as e:
+            logger.error("get_run: Fehler beim Lesen von Run %s: %s", run_id, e, exc_info=True)
+            raise
+
+        # jetzt die echten Ergebnisse holen
+        try:
+            run.results = await self.list_results(run_id)
+        except Exception:
+            # falls list_results schon Exception wirft, abfangen, aber Metadaten liefern wir trotzdem
+            logger.warning("get_run: konnte Ergebnisse für Run %s nicht laden, liefere Metadaten ohne results", run_id)
+        return run
+
+    async def add_result(self, run_id: str, result: TestResult) -> None:
+        """
+        Speichert ein einzelnes TestResult im 'testresults'-Container (partition_key = run_id),
+        zählt dann die bisherigen Ergebnisse für diesen Run und patched abschließend
+        den Status des TestRun im 'testruns'-Container.
+        """
+        # 1) TestResult speichern
+        try:
+            doc = result.to_dict()
+            # run_id als Partition-Key beilegen
+            doc["run_id"] = run_id
+            await self.result_container.create_item(
+                body=doc,
+                #partition_key=run_id
+            )
+            logger.debug("add_result: Stored TestResult %s for run %s", result.id, run_id)
+        except Exception as e:
+            logger.error("add_result: Fehler beim Speichern von TestResult %s: %s", result.id, e, exc_info=True)
+            raise
+
+        # 2) Anzahl abgeschlossener Ergebnisse abrufen
+        try:
+            count_query = "SELECT VALUE COUNT(1) FROM c WHERE c.run_id = @run_id"
+            params = [{"name": "@run_id", "value": run_id}]
+            completed = 0
+
+            # Hier sorgt partition_key=run_id dafür, dass Cosmos nur diese Partition scannt
+            iterator = self.result_container.query_items(
+                query=count_query,
+                parameters=params,
+                partition_key=run_id
+            )
+            async for cnt in iterator:
+                completed = cnt
+
+            logger.debug("add_result: Run %s has %d completed results", run_id, completed)
+        except Exception as e:
+            logger.error("add_result: Fehler beim Zählen der Ergebnisse für Run %s: %s", run_id, e, exc_info=True)
+            raise
+
+        # 3) Status des TestRun updaten (Running vs. Done)
+        try:
+            # Zuerst die Metadaten des Runs holen
+            run_doc = await self.run_container.read_item(item=run_id, partition_key=run_id)
+            total = len(run_doc.get("prompt_ids", []))
+            new_status = "Done" if completed >= total else "Running"
+
+            # Patch-Operation nur für das status-Feld
+            await self.run_container.patch_item(
+                item=run_id,
+                partition_key=run_id,
+                patch_operations=[
+                    {"op": "replace", "path": "/status", "value": new_status}
+                ]
+            )
+            logger.debug("add_result: Updated status for run %s to %s", run_id, new_status)
+        except Exception as e:
+            logger.error("add_result: Fehler beim Patchen des Status für Run %s: %s", run_id, e, exc_info=True)
+            raise
+
+
+    async def list_runs(self, status: Optional[str] = None) -> List[TestRun]:
+        """
+        Liefert Metadaten aller TestRuns zurück (ohne embedded results).
+        Filtert optional nach status.
+        """
+        query = "SELECT * FROM c"
+        parameters = []
+        if status:
+            query += " WHERE c.status = @status"
+            parameters = [{"name": "@status", "value": status}]
+
+        runs: List[TestRun] = []
+        try:
+            iterator = self.run_container.query_items(query=query, parameters=parameters)
+            async for doc in iterator:
+                runs.append(TestRun.from_dict(doc))
+            logger.debug("list_runs: Retrieved %d runs (status=%s)", len(runs), status)
+            return runs
+        except CosmosHttpResponseError as e:
+            logger.error("list_runs: Cosmos query failed: %s", e, exc_info=True)
+            raise
+
+    async def update_run(self, run: TestRun) -> None:
+        """
+        Vollständiges Upsert eines TestRun (inkl. embedded results).
+        """
+        # serialisieren
+        try:
+            item = asdict(run)
+            item["params"]  = asdict(run.params)
+            item["results"] = [r.to_dict() for r in run.results]
+        except Exception as e:
+            logger.exception("update_run: Serialisierung fehlgeschlagen für run %s", run.id)
+            raise
+
+        # upsert
+        try:
+            await self.run_container.upsert_item(item)
+            logger.debug("update_run: Upserted run %s (status=%s, %d results)", run.id, run.status, len(run.results))
+        except CosmosHttpResponseError as e:
+            logger.error("update_run: CosmosDB-Fehler beim Upsert von run %s: %s", run.id, e, exc_info=True)
+            raise
+        except Exception:
+            logger.exception("update_run: Unerwarteter Fehler beim Upsert von run %s", run.id)
+            raise
+
+    async def list_results(self, run_id: str) -> List[TestResult]:
+        """
+        Holt alle TestResult-Dokumente für einen Run aus dem result_container
+        (Partition-Key = run_id).
+        """
+        query = "SELECT * FROM c WHERE c.run_id = @run_id"
+        params = [{"name": "@run_id", "value": run_id}]
+        results: List[TestResult] = []
+        try:
+            iterator = self.result_container.query_items(
+                query=query,
+                parameters=params,
+                partition_key=run_id
+            )
+            results: List[TestResult] = []
+            async for doc in iterator:
+                results.append(TestResult.from_dict(doc))
+            logger.debug("list_results: Gefunden %d Ergebnisse für Run %s", len(results), run_id)
+            return results
+        except Exception as e:
+            logger.error("list_results: Fehler beim Lesen der Ergebnisse für Run %s: %s", run_id, e, exc_info=True)
+            raise
+
+    async def run_tests(self,
+                        run_id: str,
+                        prompt_ids: List[str],
+                        params: TestParams,
+                        *,
+                        on_result: Callable[[TestResult], Awaitable[None]] | None = None
+                       ) -> None:
+        """
+        Abarbeiten eines Runs (synchron oder im Hintergrund).
+        - setzt status=Running
+        - feuert für jeden Prompt call_ai_model ab
+        - speichert jedes Ergebnis via add_result()
+        - am Ende status=Done
+        - optionaler on_result Hook wird nach jedem einzelnen TestResult aufgerufen
+        """
+        from backend.services.ai_client import call_ai_model  # zykluseitig hier importieren
+
+        # 1) Running markieren
+        await self.run_container.patch_item(
+            item=run_id,
+            partition_key=run_id,
+            patch_operations=[{"op": "replace", "path": "/status", "value": "Running"}]
+        )
+
+        # 2) pro Prompt
+        for pid in prompt_ids:
+            try:
+                prompt = await self.get_prompt(pid)
+                try:
+                    ai_resp = await call_ai_model(prompt.text, params)
+                except Exception as e:
+                    ai_resp = f"ERROR: {e}"
+                    logger.error("run_tests: AI-Call für %s fehlgeschlagen: %s", pid, e)
+                result = TestResult(
+                    id=str(uuid.uuid4()),
+                    run_id=run_id,
+                    prompt_id=prompt.id,
+                    prompt_text=prompt.text,
+                    ai_response=ai_resp,
+                    golden_answer=prompt.golden_answer
+                )
+
+                # 3) Ergebnis speichern
+                await self.add_result(run_id, result)
+
+                # 4) Hook (z.B. Websocket, Live-UI-Update)
+                if on_result:
+                    await on_result(result)
+
+            except Exception:
+                logger.exception("run_tests: Unerwarteter Fehler bei Prompt %s", pid)
+
+        # 5) Done markieren
+        await self.run_container.patch_item(
+            item=run_id,
+            partition_key=run_id,
+            patch_operations=[{"op": "replace", "path": "/status", "value": "Done"}]
+        )
+"""
+
+backend/models/testrun.py:
+"""
+import logging
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from typing import Literal, Optional, List
+
+logger = logging.getLogger('logger')
+
+@dataclass
+class TestParams:
+    model: str
+    temperature: float
+    max_tokens: int
+    top_p: Optional[float] = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TestParams":
+        try:
+            return cls(**data)
+        except TypeError as e:
+            logger.error("Invalid TestParams data: %s – %s", data, e)
+            raise
+
+@dataclass
+class TestResult:
+    id: str
+    run_id: str
+    prompt_id: str
+    prompt_text: str
+    ai_response: str
+    golden_answer: str
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+
+    relevance: float = 0.0
+    relevance_comment: str = ""
+    factual_accuracy: float = 0.0
+    factual_accuracy_comment: str = ""
+    completeness: float = 0.0
+    completeness_comment: str = ""
+    tone: float = 0.0
+    tone_comment: str = ""
+    comprehensibility: float = 0.0
+    comprehensibility_comment: str = ""
+    overall_comment: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["timestamp"] = self.timestamp.isoformat()
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TestResult":
+        """
+        Baut ein TestResult aus den erwarteten Feldern und
+        ignoriert alle Cosmos-Metadaten. Fehlende Felder
+        werden mit Defaults belegt.
+        """
+        try:
+            dd = data.copy()
+
+            # 1) run_id (kommt jetzt immer)
+            run_id = dd["run_id"]
+
+            # 2) timestamp parsen
+            ts = dd.get("timestamp")
+            if isinstance(ts, str):
+                dd["timestamp"] = datetime.fromisoformat(ts)
+            else:
+                dd["timestamp"] = datetime.utcnow()
+
+            # 3) Defaulten für die neuen Felder, falls sie nicht da sind
+            for score_field in (
+                "relevance",
+                "factual_accuracy",
+                "completeness",
+                "tone",
+                "comprehensibility"
+            ):
+                dd.setdefault(score_field, 0.0)
+
+            for comment_field in (
+                "relevance_comment",
+                "factual_accuracy_comment",
+                "completeness_comment",
+                "tone_comment",
+                "comprehensibility_comment"
+            ):
+                dd.setdefault(comment_field, "")
+
+            dd.setdefault("overall_comment", None)
+
+            # 4) Konstruktion
+            return cls(
+                id=dd["id"],
+                run_id=run_id,
+                prompt_id=dd["prompt_id"],
+                prompt_text=dd["prompt_text"],
+                ai_response=dd["ai_response"],
+                golden_answer=dd["golden_answer"],
+                timestamp=dd["timestamp"],
+                relevance=dd["relevance"],
+                relevance_comment=dd["relevance_comment"],
+                factual_accuracy=dd["factual_accuracy"],
+                factual_accuracy_comment=dd["factual_accuracy_comment"],
+                completeness=dd["completeness"],
+                completeness_comment=dd["completeness_comment"],
+                tone=dd["tone"],
+                tone_comment=dd["tone_comment"],
+                comprehensibility=dd["comprehensibility"],
+                comprehensibility_comment=dd["comprehensibility_comment"],
+                overall_comment=dd["overall_comment"],
+            )
+        except KeyError as e:
+            logger.error("Missing required TestResult field %s in %s", e, data)
+            raise
+        except Exception as e:
+            logger.error("Invalid TestResult data: %s – %s", data, e)
+            raise
+
+@dataclass
+class ComparisonResult:
+    relevance: float
+    relevance_comment: str
+    factual_accuracy: float
+    factual_accuracy_comment: str
+    completeness: float
+    completeness_comment: str
+    tone: float
+    tone_comment: str
+    comprehensibility: float
+    comprehensibility_comment: str
+    overall_comment: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ComparisonResult":
+        """
+        Baut ein ComparisonResult aus einem dict (z.B. geparstes JSON).
+        """
+        try:
+            return cls(
+                relevance                 = float(data["relevance"]),
+                relevance_comment         = data["relevance_comment"],
+                factual_accuracy          = float(data["factual_accuracy"]),
+                factual_accuracy_comment  = data["factual_accuracy_comment"],
+                completeness              = float(data["completeness"]),
+                completeness_comment      = data["completeness_comment"],
+                tone                      = float(data["tone"]),
+                tone_comment              = data["tone_comment"],
+                comprehensibility         = float(data["comprehensibility"]),
+                comprehensibility_comment = data["comprehensibility_comment"],
+                overall_comment           = data.get("overall_comment"),
+            )
+        except KeyError as e:
+            logger.error("Missing comparison field %s in %s", e, data)
+            raise
+        except Exception as e:
+            logger.error("Invalid ComparisonResult data: %s – %s", data, e)
+            raise
+"""

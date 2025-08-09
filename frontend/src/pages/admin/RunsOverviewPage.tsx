@@ -1,5 +1,5 @@
 // src/pages/admin/RunsOverviewPage.tsx
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useMemo} from 'react'
 import {
   Container,
   Typography,
@@ -12,6 +12,7 @@ import {
   TableRow,
   TableCell,
   TableBody,
+  TableSortLabel,
   CircularProgress,
   Alert
 } from '@mui/material'
@@ -23,6 +24,24 @@ const RunsOverviewPage: React.FC = () => {
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [loading, setLoading] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
+  const [order, setOrder] = useState<'asc' | 'desc'>('desc');
+  const [orderBy, setOrderBy] = useState<keyof RunSummary>('created_at');
+
+  const handleRequestSort = (property: keyof RunSummary) => {
+    const isAsc = orderBy === property && order === 'asc';
+    setOrder(isAsc ? 'desc' : 'asc');
+    setOrderBy(property);
+  };
+
+  const sortedRuns = useMemo(() => {
+    return [...runs].sort((a, b) => {
+      const dateA = new Date(a.created_at).getTime();
+      const dateB = new Date(b.created_at).getTime();
+      const comp = dateA - dateB;
+      return order === 'asc' ? comp : -comp;
+    });
+  }, [runs, order, orderBy]);
+
   const navigate = useNavigate()
 
   const loadRuns = async () => {
@@ -43,10 +62,11 @@ const RunsOverviewPage: React.FC = () => {
     loadRuns()
   }, [])
 
+
   return (
     <Container sx={{ mt: 4, mb: 4 }}>
       <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2}>
-        <Typography variant="h4">Übersicht aller Test-Runs</Typography>
+        <Typography variant="h4">Übersicht aller Test Runs</Typography>
         <Button variant="outlined" onClick={loadRuns} disabled={loading}>
           {loading ? <CircularProgress size={20} /> : 'Aktualisieren'}
         </Button>
@@ -69,24 +89,35 @@ const RunsOverviewPage: React.FC = () => {
               <TableRow>
                 <TableCell>Run ID</TableCell>
                 <TableCell>Status</TableCell>
-                <TableCell>Erstellt am</TableCell>
+                <TableCell
+                  sortDirection={orderBy === 'created_at' ? order : false}
+                >
+                  <TableSortLabel
+                    active={orderBy === 'created_at'}
+                    direction={orderBy === 'created_at' ? order : 'asc'}
+                    onClick={() => handleRequestSort('created_at')}
+                  >
+                    Erstellt am
+                  </TableSortLabel>
+                </TableCell>
                 <TableCell align="right">Prompts</TableCell>
                 <TableCell align="right">Fertig</TableCell>
                 <TableCell align="right">Aktion</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
-              {runs.map(run => (
+              {sortedRuns.map((run) => (
                 <TableRow key={run.id} hover>
                   <TableCell>{run.id}</TableCell>
                   <TableCell>{run.status}</TableCell>
-                  <TableCell>{new Date(run.created_at).toLocaleString()}</TableCell>
-                  <TableCell align="right">{run.prompt_ids.length}</TableCell>
+                  <TableCell>
+                    {new Date(run.created_at).toLocaleString()}
+                  </TableCell>
                   <TableCell align="right">
-                    {/* completed wird hier on the fly im Backend berechnet */}
-                    {run.status === 'Done'
-                      ? run.prompt_ids.length
-                      : '—'}
+                    {run.prompt_ids.length}
+                  </TableCell>
+                  <TableCell align="right">
+                    {run.status === 'Done' ? run.prompt_ids.length : '—'}
                   </TableCell>
                   <TableCell align="right">
                     <Button
@@ -99,7 +130,7 @@ const RunsOverviewPage: React.FC = () => {
                   </TableCell>
                 </TableRow>
               ))}
-              {runs.length === 0 && !loading && (
+              {sortedRuns.length === 0 && !loading && (
                 <TableRow>
                   <TableCell colSpan={6} align="center">
                     Keine Runs gefunden.

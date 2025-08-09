@@ -27,7 +27,7 @@ const Main = styled('main', {
   shouldForwardProp: (prop) => prop !== 'open'
 })<{ open?: boolean }>(({ theme, open }) => ({
   flexGrow: 1,
-  marginTop: theme.spacing(8),
+  marginTop: theme.spacing(2),
 
   // default: volle Breite
   width: '100%',
@@ -117,7 +117,7 @@ export default function AdminLayout() {
       {/* Haupt-Inhalt */}
       <Main open={open}>
         {/* Toolbar-Puffer */}
-        <Toolbar />
+        {/* <Toolbar /> */}
         <Outlet />
       </Main>
     </Box>

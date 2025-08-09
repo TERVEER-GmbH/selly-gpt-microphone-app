@@ -90,6 +90,7 @@ const AdminPromptsPage: React.FC = () => {
     >
       {/* Toolbar */}
       <Stack direction="row" spacing={2} alignItems="center" mb={2}>
+        <Typography variant="h4">Übersicht aller Test Prompts</Typography>
         <Button
           startIcon={<AddIcon />}
           variant="contained"

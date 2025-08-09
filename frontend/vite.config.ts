@@ -15,7 +15,7 @@ export default defineConfig({
     sourcemap: true,
   },
   server: {
-    port: 3010,
+    port: 3043,
     // alle API-Aufrufe auf Port 50505 forwarden
     proxy: {
       '/ask': {
