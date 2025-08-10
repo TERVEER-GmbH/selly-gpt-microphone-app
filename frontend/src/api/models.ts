@@ -180,13 +180,41 @@ export interface TestParams {
 }
 
 export interface TestResult {
-  id: string;
-  prompt_id: string;
-  prompt_text: string;
-  ai_response: string;
-  golden_answer: string;
-  timestamp: string;
+  id: string
+  run_id: string
+
+  prompt_id: string
+  prompt_text: string
+  ai_response: string
+  golden_answer: string
+  timestamp: string
+
+  // Scores
+  relevance?: number;
+  factual_accuracy?: number;
+  completeness?: number;
+  tone?: number;
+  comprehensibility?: number;
+
+  // Kommentare
+  relevance_comment?: string;
+  factual_accuracy_comment?: string;
+  completeness_comment?: string;
+  tone_comment?: string;
+  comprehensibility_comment?: string;
+
+  overall_comment?: string | null;
 }
+
+export type TestResultUpdate = Partial<Pick<
+  TestResult,
+  | 'relevance' | 'relevance_comment'
+  | 'factual_accuracy' | 'factual_accuracy_comment'
+  | 'completeness' | 'completeness_comment'
+  | 'tone' | 'tone_comment'
+  | 'comprehensibility' | 'comprehensibility_comment'
+  | 'overall_comment'
+>>;
 
 export interface RunSummary {
   id: string;
@@ -206,4 +234,26 @@ export interface RunStatus {
   total: number;
   completed: number;
   created_at: string;
+}
+
+export interface RunMetrics {
+  count: number
+  category_averages: {
+    relevance: number
+    factual_accuracy: number
+    completeness: number
+    tone: number
+    comprehensibility: number
+  }
+  avg_subscore: number
+  overall_score: number
+}
+
+export interface RunListItem {
+  id: string
+  prompt_ids: string[]
+  params: TestParams
+  status: 'Pending' | 'Running' | 'Done'
+  created_at: string
+  metrics?: RunMetrics
 }

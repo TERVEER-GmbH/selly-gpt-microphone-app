@@ -1,10 +1,11 @@
 import csv, json
 import uuid
 import logging
+import asyncio
 from dataclasses import asdict
 from datetime import datetime, timezone
 from .base_cosmos import BaseCosmosClient
-from typing import Tuple, List, IO, Optional, Callable, Awaitable
+from typing import Tuple, List, IO, Optional, Callable, Awaitable, Any, Dict
 
 from azure.cosmos.exceptions import CosmosHttpResponseError
 
@@ -171,10 +172,7 @@ class CosmosAdminClient(BaseCosmosClient):
             doc = result.to_dict()
             # run_id als Partition-Key beilegen
             doc["run_id"] = run_id
-            await self.result_container.create_item(
-                body=doc,
-                #partition_key=run_id
-            )
+            await self.result_container.create_item(body=doc)
             logger.debug("add_result: Stored TestResult %s for run %s", result.id, run_id)
         except Exception as e:
             logger.error("add_result: Fehler beim Speichern von TestResult %s: %s", result.id, e, exc_info=True)
@@ -183,18 +181,15 @@ class CosmosAdminClient(BaseCosmosClient):
         # 2) Anzahl abgeschlossener Ergebnisse abrufen
         try:
             count_query = "SELECT VALUE COUNT(1) FROM c WHERE c.run_id = @run_id"
-            params = [{"name": "@run_id", "value": run_id}]
-            completed = 0
-
             # Hier sorgt partition_key=run_id dafür, dass Cosmos nur diese Partition scannt
             iterator = self.result_container.query_items(
                 query=count_query,
-                parameters=params,
+                parameters=[{"name": "@run_id", "value": run_id}],
                 partition_key=run_id
             )
+            completed = 0
             async for cnt in iterator:
                 completed = cnt
-
             logger.debug("add_result: Run %s has %d completed results", run_id, completed)
         except Exception as e:
             logger.error("add_result: Fehler beim Zählen der Ergebnisse für Run %s: %s", run_id, e, exc_info=True)
@@ -211,9 +206,7 @@ class CosmosAdminClient(BaseCosmosClient):
             await self.run_container.patch_item(
                 item=run_id,
                 partition_key=run_id,
-                patch_operations=[
-                    {"op": "replace", "path": "/status", "value": new_status}
-                ]
+                patch_operations=[{"op": "replace", "path": "/status", "value": new_status}]
             )
             logger.debug("add_result: Updated status for run %s to %s", run_id, new_status)
         except Exception as e:
@@ -281,7 +274,6 @@ class CosmosAdminClient(BaseCosmosClient):
                 parameters=params,
                 partition_key=run_id
             )
-            results: List[TestResult] = []
             async for doc in iterator:
                 results.append(TestResult.from_dict(doc))
             logger.debug("list_results: Gefunden %d Ergebnisse für Run %s", len(results), run_id)
@@ -290,12 +282,174 @@ class CosmosAdminClient(BaseCosmosClient):
             logger.error("list_results: Fehler beim Lesen der Ergebnisse für Run %s: %s", run_id, e, exc_info=True)
             raise
 
+    _SCORE_FIELDS = {
+        "relevance",
+        "factual_accuracy",
+        "completeness",
+        "tone",
+        "comprehensibility",
+    }
+    _COMMENT_FIELDS = {
+        "relevance_comment",
+        "factual_accuracy_comment",
+        "completeness_comment",
+        "tone_comment",
+        "comprehensibility_comment",
+        "overall_comment",
+    }
+    _EDITABLE_TEXT_FIELDS = {
+        # optional: erlaube gezielt Korrektur der Texte
+        "ai_response",
+        "golden_answer",
+    }
+
+    def _normalize_update(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Erlaubte Felder extrahieren und Werte normalisieren.
+        Scores werden auf 1–5 gerundet/geclamp’t.
+        Kommentare werden zu Strings getrimmt.
+        """
+        if not isinstance(payload, dict):
+            return {}
+
+        def clamp15(v):
+            try:
+                n = float(v)
+            except Exception:
+                return 3
+            n = round(n)
+            return max(1, min(5, int(n)))
+
+        allowed_num = {
+            "relevance",
+            "factual_accuracy",
+            "completeness",
+            "tone",
+            "comprehensibility",
+        }
+        allowed_str = {
+            "relevance_comment",
+            "factual_accuracy_comment",
+            "completeness_comment",
+            "tone_comment",
+            "comprehensibility_comment",
+            "overall_comment",
+        }
+
+        out: Dict[str, Any] = {}
+        for k, v in payload.items():
+            if k in allowed_num:
+                out[k] = clamp15(v)
+            elif k in allowed_str:
+                out[k] = (v or "")
+                if isinstance(out[k], str):
+                    out[k] = out[k].strip()
+                else:
+                    out[k] = str(out[k]).strip()
+        return out
+
+
+    async def patch_result(self, run_id: str, result_id: str, payload: Dict[str, Any]) -> TestResult:
+        """
+        Aktualisiert ein TestResult-Dokument (Partition: run_id) in einem Schritt:
+        - Dokument lesen
+        - erlaubte Felder mergen
+        - upsert_item (ein Schreibvorgang, kein 10-Ops-Limit wie bei Patch)
+        """
+        try:
+            updates = self._normalize_update(payload)
+            # Wenn nichts zu ändern ist, Original zurückgeben
+            if not updates:
+                doc = await self.result_container.read_item(item=result_id, partition_key=run_id)
+                return TestResult.from_dict(doc)
+
+            # 1) Bestehendes Dokument holen
+            doc = await self.result_container.read_item(item=result_id, partition_key=run_id)
+
+            # 2) Merge der Updates
+            for k, v in updates.items():
+                doc[k] = v
+
+            # Partition-Key sicherstellen
+            doc["run_id"] = run_id
+            doc["id"] = result_id
+
+            # 3) Upsert/Replace (ein Request)
+            # Beides geht, upsert ist am einfachsten:
+            await self.result_container.upsert_item(doc)
+            # alternativ:
+            # await self.result_container.replace_item(item=result_id, body=doc, partition_key=run_id)
+
+            return TestResult.from_dict(doc)
+
+        except Exception as e:
+            logger.error(
+                "patch_result: Fehler beim Upsert von %s/%s: %s",
+                run_id, result_id, e, exc_info=True
+            )
+            raise
+
+
+    async def compute_run_metrics(self, run_id: str) -> Dict[str, Any]:
+        """
+        Aggregiert Metriken für einen Run:
+        - count: Anzahl Ergebnisse
+        - category_averages: Mittelwerte pro Kategorie
+        - avg_subscore: Mittelwert der Prompt-Subscores (Subscore = Mittel der 5 Kategorien)
+        - overall_score: Mittelwert der Prompt-Gesamtscores (Produkt der 5 Kategorien)
+        """
+        results = await self.list_results(run_id)
+        n = len(results)
+        if n == 0:
+            return {
+                "count": 0,
+                "category_averages": {
+                    "relevance": 0.0,
+                    "factual_accuracy": 0.0,
+                    "completeness": 0.0,
+                    "tone": 0.0,
+                    "comprehensibility": 0.0,
+                },
+                "avg_subscore": 0.0,
+                "overall_score": 0.0,
+            }
+
+        sum_relevance = sum(r.relevance for r in results)
+        sum_factual   = sum(r.factual_accuracy for r in results)
+        sum_complete  = sum(r.completeness for r in results)
+        sum_tone      = sum(r.tone for r in results)
+        sum_comp      = sum(r.comprehensibility for r in results)
+
+        # per-prompt subscore & product
+        subscores = [
+            (r.relevance + r.factual_accuracy + r.completeness + r.tone + r.comprehensibility) / 5.0
+            for r in results
+        ]
+        products = [
+            (r.relevance * r.factual_accuracy * r.completeness * r.tone * r.comprehensibility)
+            for r in results
+        ]
+
+        return {
+            "count": n,
+            "category_averages": {
+                "relevance":         sum_relevance / n,
+                "factual_accuracy":  sum_factual / n,
+                "completeness":      sum_complete / n,
+                "tone":              sum_tone / n,
+                "comprehensibility": sum_comp / n,
+            },
+            "avg_subscore": sum(subscores) / n,
+            "overall_score": sum(products) / n,
+        }
+
     async def run_tests(self,
                         run_id: str,
                         prompt_ids: List[str],
                         params: TestParams,
                         *,
-                        on_result: Callable[[TestResult], Awaitable[None]] | None = None
+                        on_result: Callable[[TestResult], Awaitable[None]] | None = None,
+                        throttle_seconds: float = 0.0
                        ) -> None:
         """
         Abarbeiten eines Runs (synchron oder im Hintergrund).
@@ -305,46 +459,75 @@ class CosmosAdminClient(BaseCosmosClient):
         - am Ende status=Done
         - optionaler on_result Hook wird nach jedem einzelnen TestResult aufgerufen
         """
-        from backend.services.ai_client import call_ai_model  # zykluseitig hier importieren
+        # Lazy imports, um Zyklen zu vermeiden
+        from backend.services.ai_client import call_ai_model
+        from backend.services.comparator import compare_answers
 
-        # 1) Running markieren
+        # Running
         await self.run_container.patch_item(
             item=run_id,
             partition_key=run_id,
             patch_operations=[{"op": "replace", "path": "/status", "value": "Running"}]
         )
 
-        # 2) pro Prompt
         for pid in prompt_ids:
             try:
                 prompt = await self.get_prompt(pid)
+
+                # 1) AI
                 try:
                     ai_resp = await call_ai_model(prompt.text, params)
                 except Exception as e:
                     ai_resp = f"ERROR: {e}"
                     logger.error("run_tests: AI-Call für %s fehlgeschlagen: %s", pid, e)
+
+                # 2) Compare (robust: bei Fehler trotzdem Result speichern)
+                comp = None
+                try:
+                    comp = await compare_answers(prompt.text, ai_resp, prompt.golden_answer, params)
+                except Exception as e:
+                    logger.error("run_tests: compare_answers fehlgeschlagen für %s: %s", pid, e)
+
+                # 3) Result
                 result = TestResult(
                     id=str(uuid.uuid4()),
                     run_id=run_id,
                     prompt_id=prompt.id,
                     prompt_text=prompt.text,
                     ai_response=ai_resp,
-                    golden_answer=prompt.golden_answer
+                    golden_answer=prompt.golden_answer,
+                    timestamp=datetime.utcnow()
                 )
 
-                # 3) Ergebnis speichern
+                if comp:
+                    result.relevance                 = comp.relevance
+                    result.relevance_comment         = comp.relevance_comment
+                    result.factual_accuracy          = comp.factual_accuracy
+                    result.factual_accuracy_comment  = comp.factual_accuracy_comment
+                    result.completeness              = comp.completeness
+                    result.completeness_comment      = comp.completeness_comment
+                    result.tone                      = comp.tone
+                    result.tone_comment              = comp.tone_comment
+                    result.comprehensibility         = comp.comprehensibility
+                    result.comprehensibility_comment = comp.comprehensibility_comment
+                    result.overall_comment           = comp.overall_comment
+
+                # 4) speichern
                 await self.add_result(run_id, result)
 
-                # 4) Hook (z.B. Websocket, Live-UI-Update)
+                 # 5) Callback
                 if on_result:
                     await on_result(result)
+
+                # 6) Throttling (z.B. Rate-Limits)
+                if throttle_seconds > 0:
+                    await asyncio.sleep(throttle_seconds)
 
             except Exception:
                 logger.exception("run_tests: Unerwarteter Fehler bei Prompt %s", pid)
 
-        # 5) Done markieren
+        # Done
         await self.run_container.patch_item(
-            item=run_id,
-            partition_key=run_id,
+            item=run_id, partition_key=run_id,
             patch_operations=[{"op": "replace", "path": "/status", "value": "Done"}]
         )

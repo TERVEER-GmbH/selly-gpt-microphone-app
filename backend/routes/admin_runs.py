@@ -15,16 +15,30 @@ runs_bp = Blueprint("admin_runs", __name__, url_prefix="/admin/runs")
 @require_role("Admin")
 async def list_runs():
     """
-    GET /admin/runs
-    -> [{ id, prompt_ids, params, status, created_at }]
+    GET /admin/runs?includeMetrics=1
+    -> Standard-Metadaten je Run
+       + optional metrics: { count, category_averages, avg_subscore, overall_score }
     """
     await cosmos_admin_db_ready.wait()
+    include_metrics = request.args.get("includeMetrics") in ("1", "true", "True")
 
     try:
-        runs = await current_app.cosmos_admin_client.list_runs()
-        return jsonify([r.to_dict() for r in runs]), 200
+        client = current_app.cosmos_admin_client
+        runs = await client.list_runs()
+
+        if not include_metrics:
+            return jsonify([r.to_dict() for r in runs]), 200
+
+        enriched = []
+        for r in runs:
+            metrics = await client.compute_run_metrics(r.id)
+            rd = r.to_dict()
+            rd["metrics"] = metrics
+            enriched.append(rd)
+        return jsonify(enriched), 200
+
     except Exception:
-        logger.exception("list_runs: Fehler",)
+        logger.exception("list_runs: Fehler")
         return jsonify({"error":"Could not fetch runs"}), 500
 
 @runs_bp.route("", methods=["POST"])
@@ -46,18 +60,14 @@ async def start_run():
 @require_role("Admin")
 async def get_status(run_id):
     """
-    GET /admin/runs/<run_id>/status
+    GET /admin/runs/<run_id>/status?includeMetrics=1
     {
-        id: string,
-        prompt_ids: string[],
-        params: { model, temperature, max_tokens, top_p? },
-        status: "Pending"|"Running"|"Done",
-        total: number,
-        completed: number,
-        created_at: string
+        run_id, prompt_ids, params, status, total, completed, created_at
+        + metrics (optional via ?includeMetrics=1)
     }
     """
     await cosmos_admin_db_ready.wait()
+    include_metrics = request.args.get("includeMetrics") in ("1", "true", "True")
     try:
         client = current_app.cosmos_admin_client
 
@@ -66,17 +76,16 @@ async def get_status(run_id):
 
         # 2) Completed count aus dem result-Container ermitteln (partitioniert nach run_id)
         count_query = "SELECT VALUE COUNT(1) FROM c WHERE c.run_id = @run_id"
-        completed = 0
         iterator = client.result_container.query_items(
             query=count_query,
             parameters=[{"name": "@run_id", "value": run_id}],
             partition_key=run_id
         )
+        completed = 0
         async for cnt in iterator:
             completed = cnt
 
-        # 3) Response mit allen Feldern
-        return jsonify({
+        payload = {
             "run_id":     run.id,
             "prompt_ids": run.prompt_ids,
             "params":     run.params.to_dict(),
@@ -84,11 +93,30 @@ async def get_status(run_id):
             "total":      len(run.prompt_ids),
             "completed":  completed,
             "created_at": run.created_at
-        }), 200
+        }
 
+        if include_metrics:
+            payload["metrics"] = await client.compute_run_metrics(run_id)
+
+        return jsonify(payload), 200
     except Exception:
         logger.exception("Error fetching run status %s", run_id)
         return jsonify({"error": "Could not fetch status"}), 500
+
+@runs_bp.route("/<run_id>/summary", methods=["GET"])
+@require_role("Admin")
+async def get_summary(run_id):
+    """
+    GET /admin/runs/<run_id>/summary
+    -> { count, category_averages, avg_subscore, overall_score }
+    """
+    await cosmos_admin_db_ready.wait()
+    try:
+        metrics = await current_app.cosmos_admin_client.compute_run_metrics(run_id)
+        return jsonify(metrics), 200
+    except Exception:
+        logger.exception("get_summary: Fehler bei %s", run_id)
+        return jsonify({"error":"Could not fetch summary"}), 500
 
 @runs_bp.route("/<run_id>/results", methods=["GET"])
 @require_role("Admin")
@@ -105,69 +133,57 @@ async def get_results(run_id):
         logger.exception("get_results: Fehler bei %s", run_id)
         return jsonify({"error":"Could not fetch results"}), 500
 
+@runs_bp.route("/<run_id>/results/<result_id>", methods=["PATCH"])
+@require_role("Admin")
+async def patch_result(run_id, result_id):
+    """
+    PATCH /admin/runs/<run_id>/results/<result_id>
+    Body: { any of score/comment fields, optionally ai_response/golden_answer }
+    -> updated TestResult
+    """
+    await cosmos_admin_db_ready.wait()
+    try:
+        payload = await request.get_json() or {}
+        updated = await current_app.cosmos_admin_client.patch_result(run_id, result_id, payload)
+        return jsonify(updated.to_dict()), 200
+    except Exception:
+        logger.exception("patch_result: Fehler für %s/%s", run_id, result_id)
+        return jsonify({"error":"Could not patch result"}), 500
+
 @runs_bp.route("/<run_id>/test/<prompt_id>", methods=["POST"])
 @require_role("Admin")
 async def test_single(run_id, prompt_id):
     """
-    wird jetzt eigentlich nur noch zum Inkrementellen Testen benutzt,
-    aber im Prinzip genauso wie ein Batch.
-    Wenn du hier sofort das Ergebnis zurückgeben willst,
-    kannst du synchron client.run_tests mit [prompt_id] aufrufen.
+    Einheitlich: nutzt die zentrale run_tests-Logik
+    und gibt das eine Resultat zurück.
     """
     await cosmos_admin_db_ready.wait()
-    params = TestParams(**(await request.get_json() or {}).get("params", {}))
+    body = await request.get_json() or {}
+    params = TestParams(**body.get("params", {})) if body.get("params") else None
     client = current_app.cosmos_admin_client
-    prompt = await client.get_prompt(prompt_id)
 
-    # Wenn Run nicht existiert, erst anlegen
+    # Sicherstellen, dass der Run existiert, sonst wird ein neuer erstellt
     try:
         await client.get_run(run_id)
     except:
-        await client.start_run([prompt_id], params)
+        await client.start_run([prompt_id], params or TestParams(model="gpt-4o", temperature=0, max_tokens=256))
 
-    # 1) AI-Antwort holen
-    ai_resp = await call_ai_model(prompt.text, params)
+    # Ergebnis über Callback einsammeln
+    holder: dict[str, TestResult] = {}
+    async def _cb(r: TestResult):
+        # wir wollen genau das Result für dieses prompt_id
+        if r.prompt_id == prompt_id:
+            holder["r"] = r
 
-    # 2) automatischer Vergleich
-    comp = await compare_answers(
-        ai_answer=ai_resp,
-        golden_answer=prompt.golden_answer,
-        params=params
-    )
-
-    # 3) TestResult befüllen – inkl. Scores & Kommentare
-    result = TestResult(
-        id=str(uuid.uuid4()),
+    await client.run_tests(
         run_id=run_id,
-        prompt_id=prompt.id,
-        prompt_text=prompt.text,
-        ai_response=ai_resp,
-        golden_answer=prompt.golden_answer
+        prompt_ids=[prompt_id],
+        params=params or TestParams(model="gpt-4o", temperature=0, max_tokens=256),
+        on_result=_cb,
+        throttle_seconds=0.0
     )
-    # Scores
-    result.relevance                 = comp.relevance
-    result.relevance_comment         = comp.relevance_comment
-    result.factual_accuracy          = comp.factual_accuracy
-    result.factual_accuracy_comment  = comp.factual_accuracy_comment
-    result.completeness              = comp.completeness
-    result.completeness_comment      = comp.completeness_comment
-    result.tone                      = comp.tone
-    result.tone_comment              = comp.tone_comment
-    result.comprehensibility         = comp.comprehensibility
-    result.comprehensibility_comment = comp.comprehensibility_comment
-    result.overall_comment           = comp.overall_comment
 
-    # 4) speichern und zurückgeben
-    await client.add_result(run_id, result)
-    return jsonify(result.to_dict()), 200
-
-@runs_bp.route("/<run_id>/results", methods=["GET"])
-@require_role("Admin")
-async def list_results(run_id):
-    await cosmos_admin_db_ready.wait()
-    try:
-        results = await current_app.cosmos_admin_client.list_results(run_id)
-        return jsonify([r.to_dict() for r in results]), 200
-    except Exception:
-        logger.exception("Error fetching results for run %s", run_id)
-        return jsonify({"error": "Could not fetch results"}), 500
+    res = holder.get("r")
+    if not res:
+        return jsonify({"error": "No result"}), 500
+    return jsonify(res.to_dict()), 200

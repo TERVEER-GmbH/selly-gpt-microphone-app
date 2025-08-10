@@ -1,6 +1,21 @@
 import { chatHistorySampleData } from '../constants/chatHistory'
 
-import { ChatMessage, Conversation, ConversationRequest, CosmosDBHealth, CosmosDBStatus, UserInfo, WhoAmI, Prompt, TestParams, RunSummary, RunStatus, TestResult } from './models'
+import {
+  ChatMessage,
+  Conversation,
+  ConversationRequest,
+  CosmosDBHealth,
+  CosmosDBStatus,
+  UserInfo,
+  WhoAmI,
+  Prompt,
+  TestParams,
+  RunSummary,
+  RunStatus,
+  TestResult,
+  RunListItem,
+  RunMetrics,
+  TestResultUpdate } from './models'
 
 export async function conversationApi(options: ConversationRequest, abortSignal: AbortSignal): Promise<Response> {
   const response = await fetch('/conversation', {
@@ -451,13 +466,12 @@ export async function startRun(
   return run_id;
 }
 
-/** holt alle Runs (ohne Ergebnisse) */
-export async function getRuns(): Promise<RunSummary[]> {
-  const res = await fetch('/admin/runs', {
+export async function getRuns(includeMetrics = true): Promise<RunListItem[]> {
+  const res = await fetch(`/admin/runs?includeMetrics=${includeMetrics ? '1' : '0'}`, {
     headers: { 'Content-Type': 'application/json' }
-  });
-  if (!res.ok) throw new Error(`getRuns failed: ${res.status}`);
-  return res.json() as Promise<RunSummary[]>;
+  })
+  if (!res.ok) throw new Error(`Runs failed: ${res.status}`)
+  return await res.json()
 }
 
 /** holt den Status eines einzelnen Runs */
@@ -476,4 +490,29 @@ export async function getRunResults(runId: string): Promise<TestResult[]> {
   });
   if (!res.ok) throw new Error(`getRunResults failed: ${res.status}`);
   return res.json() as Promise<TestResult[]>;
+}
+
+export async function patchRunResult(
+  runId: string,
+  resultId: string,
+  patch: TestResultUpdate
+): Promise<TestResult> {
+  const res = await fetch(`/admin/runs/${runId}/results/${resultId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  if (!res.ok) {
+    const msg = await res.text().catch(() => '')
+    throw new Error(`PATCH failed: ${res.status} ${msg}`)
+  }
+  return await res.json()
+}
+
+export async function getRunSummary(runId: string): Promise<RunMetrics> {
+  const res = await fetch(`/admin/runs/${runId}/summary`, {
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!res.ok) throw new Error(`Summary failed: ${res.status}`)
+  return await res.json()
 }
