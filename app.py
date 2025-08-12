@@ -60,6 +60,8 @@ from azure.core.pipeline.transport import AioHttpTransport
 
 from backend.routes.admin_prompts import prompts_bp
 from backend.routes.admin_runs import runs_bp
+from backend.routes.admin_compare import compare_bp
+
 
 logger = logging.getLogger('logger')
 logger.setLevel(logging.DEBUG)
@@ -108,6 +110,7 @@ def create_app():
     # Admin Prompt Endpoints /admin/prompts & /admin/runs
     app.register_blueprint(prompts_bp)
     app.register_blueprint(runs_bp)
+    app.register_blueprint(compare_bp)
 
     app.config["TEMPLATES_AUTO_RELOAD"] = True
 

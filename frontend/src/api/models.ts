@@ -237,16 +237,17 @@ export interface RunStatus {
 }
 
 export interface RunMetrics {
-  count: number
+  count: number;
   category_averages: {
-    relevance: number
-    factual_accuracy: number
-    completeness: number
-    tone: number
-    comprehensibility: number
-  }
-  avg_subscore: number
-  overall_score: number
+    relevance: number;
+    factual_accuracy: number;
+    completeness: number;
+    tone: number;
+    comprehensibility: number;
+  };
+  avg_subscore: number;
+  product_score_avg: number;       // roh (Produkt)
+  product_score_norm_avg: number;  // 1–5 (5. Wurzel des Produkts)
 }
 
 export interface RunListItem {
@@ -257,3 +258,58 @@ export interface RunListItem {
   created_at: string
   metrics?: RunMetrics
 }
+
+export interface CompareSummary {
+  left:  { run_id: string; count: number; avg_subscore: number; product_score_norm_avg: number; };
+  right: { run_id: string; count: number; avg_subscore: number; product_score_norm_avg: number; };
+  coverage: { intersection: number; left_only: number; right_only: number; union: number; };
+  delta: { avg_subscore: number; product_score_norm_avg: number; };
+}
+
+export interface ComparePairSide {
+  prompt_id?: string;
+  prompt_text: string;
+  ai_response: string;
+  golden_answer: string;
+  scores: {
+    relevance: number;
+    factual_accuracy: number;
+    completeness: number;
+    tone: number;
+    comprehensibility: number;
+  };
+  subscore: number;
+  product_score_raw: number;
+  product_score_norm: number;
+}
+
+export type ComparePair =
+  | {
+      prompt_key: string;
+      matched: true;
+      left: ComparePairSide;
+      right: ComparePairSide;
+      delta: { product_score_norm: number; subscore: number };
+    }
+  | {
+      prompt_key: string;
+      matched: false;
+      side: 'left_only';
+      left: ComparePairSide;
+      right: null;
+    }
+  | {
+      prompt_key: string;
+      matched: false;
+      side: 'right_only';
+      left: null;
+      right: ComparePairSide;
+    };
+
+export interface CompareFull {
+  summary: CompareSummary;
+  pairs: ComparePair[];
+}
+
+// Hilfstyp, falls du sowohl RunSummary als auch RunListItem im Projekt hast
+export type RunWithMetrics<Base extends { id: string } = any> = Base & { metrics: RunMetrics };

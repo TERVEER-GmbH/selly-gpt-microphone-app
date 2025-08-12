@@ -11,6 +11,7 @@ import NoPage from './pages/NoPage'
 import AdminPromptsPage from './pages/admin/AdminPromptsPage'
 import RunsOverviewPage from './pages/admin/RunsOverviewPage'
 import RunDetailPage from './pages/admin/RunDetailPage'
+import ComparePage from './pages/admin/ComparePage'
 
 import AdminLayout from './components/admin/AdminLayout'
 
@@ -72,6 +73,12 @@ export default function App() {
                   </AdminPromptProvider>
                 }
               />
+
+              <Route path="compare" element={
+                <RequireAdmin>
+                  <ComparePage />
+                </RequireAdmin>
+              } />
 
               {/* /#/admin/runs */}
               <Route path="runs" element={<RunsOverviewPage />} />

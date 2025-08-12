@@ -15,7 +15,16 @@ import {
   TestResult,
   RunListItem,
   RunMetrics,
-  TestResultUpdate } from './models'
+  TestResultUpdate,
+  CompareFull,
+  CompareSummary
+} from './models'
+
+const buildQuery = (params: Record<string, any>) =>
+  Object.entries(params)
+    .filter(([, v]) => v !== undefined && v !== null && v !== '' && !(typeof v === 'number' && Number.isNaN(v)))
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+    .join('&')
 
 export async function conversationApi(options: ConversationRequest, abortSignal: AbortSignal): Promise<Response> {
   const response = await fetch('/conversation', {
@@ -440,6 +449,7 @@ export async function importPrompts(file: File): Promise<{ errors: any[]; create
 //             TestRuns             //
 // ################################ //
 
+
 export async function testPrompt(
   runId: string,
   promptId: string,
@@ -466,30 +476,37 @@ export async function startRun(
   return run_id;
 }
 
-export async function getRuns(includeMetrics = true): Promise<RunListItem[]> {
-  const res = await fetch(`/admin/runs?includeMetrics=${includeMetrics ? '1' : '0'}`, {
+export async function getRuns(options?: { includeMetrics?: boolean; offset?: number; limit?: number }): Promise<RunListItem[]> {
+  const query = buildQuery({
+    includeMetrics: options?.includeMetrics === false ? '0' : '1',
+    offset: options?.offset,
+    limit: options?.limit,
+  })
+  const res = await fetch(`/admin/runs${query ? `?${query}` : ''}`, {
     headers: { 'Content-Type': 'application/json' }
   })
   if (!res.ok) throw new Error(`Runs failed: ${res.status}`)
   return await res.json()
 }
 
-/** holt den Status eines einzelnen Runs */
-export async function getRunStatus(runId: string): Promise<RunStatus> {
-  const res = await fetch(`/admin/runs/${runId}/status`, {
+/** holt den Status eines einzelnen Runs (optional inkl. Metrics) */
+export async function getRunStatus(runId: string, includeMetrics = true): Promise<RunStatus> {
+  const query = includeMetrics ? '?includeMetrics=1' : ''
+  const res = await fetch(`/admin/runs/${encodeURIComponent(runId)}/status${query}`, {
     headers: { 'Content-Type': 'application/json' }
-  });
-  if (!res.ok) throw new Error(`getRunStatus failed: ${res.status}`);
-  return res.json() as Promise<RunStatus>;
+  })
+  if (!res.ok) throw new Error(`getRunStatus failed: ${res.status}`)
+  return res.json() as Promise<RunStatus>
 }
 
-/** holt alle TestResults zu einem Run */
-export async function getRunResults(runId: string): Promise<TestResult[]> {
-  const res = await fetch(`/admin/runs/${runId}/results`, {
+/** holt alle TestResults zu einem Run (mit optionaler Pagination) */
+export async function getRunResults(runId: string, options?: { offset?: number; limit?: number }): Promise<TestResult[]> {
+  const query = buildQuery({ offset: options?.offset, limit: options?.limit })
+  const res = await fetch(`/admin/runs/${encodeURIComponent(runId)}/results${query ? `?${query}` : ''}`, {
     headers: { 'Content-Type': 'application/json' }
-  });
-  if (!res.ok) throw new Error(`getRunResults failed: ${res.status}`);
-  return res.json() as Promise<TestResult[]>;
+  })
+  if (!res.ok) throw new Error(`getRunResults failed: ${res.status}`)
+  return res.json() as Promise<TestResult[]>
 }
 
 export async function patchRunResult(
@@ -515,4 +532,72 @@ export async function getRunSummary(runId: string): Promise<RunMetrics> {
   })
   if (!res.ok) throw new Error(`Summary failed: ${res.status}`)
   return await res.json()
+}
+
+// Optional: direkter Zugriff auf /metrics (identische Struktur wie /summary, aber eigener Endpoint)
+export async function getRunMetrics(runId: string): Promise<RunMetrics> {
+  const res = await fetch(`/admin/runs/${encodeURIComponent(runId)}/metrics`, {
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!res.ok) throw new Error(`Metrics failed: ${res.status}`)
+  return await res.json()
+}
+
+// Export eines Runs (CSV oder JSON). Für CSV wird ein Blob zurückgegeben.
+export async function exportRun(runId: string, fmt: 'csv' | 'json' = 'csv'): Promise<Blob | any> {
+  const res = await fetch(`/admin/runs/${encodeURIComponent(runId)}/export?fmt=${fmt}`)
+  if (!res.ok) throw new Error(`Export failed: ${res.status}`)
+  return fmt === 'csv' ? await res.blob() : await res.json()
+}
+
+export async function compareRuns(
+  left: string,
+  right: string,
+  format: 'summary' | 'full' = 'full'
+): Promise<CompareFull | CompareSummary> {
+  const qs = new URLSearchParams({ left, right, format })
+  const res = await fetch(`/admin/compare?${qs.toString()}`, {
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!res.ok) throw new Error(`Compare failed: ${res.status}`)
+  return res.json()
+}
+
+// Optional: ein kleiner Download-Helper, damit CSV sauber gespeichert wird
+async function downloadBlob(filename: string, blob: Blob) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+/**
+ * Export des Vergleichs.
+ * - CSV -> Blob + Download
+ * - JSON -> JSON-Objekt zurückgeben (kannst du selbst weiterverarbeiten/speichern)
+ */
+export async function exportCompare(
+  left: string,
+  right: string,
+  fmt: 'csv' | 'json' = 'csv'
+): Promise<Blob | any> {
+  const qs = new URLSearchParams({ left, right, fmt })
+  const res = await fetch(`/admin/compare/export?${qs.toString()}`)
+  if (!res.ok) throw new Error(`Compare export failed: ${res.status}`)
+
+  if (fmt === 'csv') {
+    const blob = await res.blob()
+    // Dateiname aus Header ziehen, falls gesetzt
+    const cd = res.headers.get('Content-Disposition') || ''
+    const m = cd.match(/filename="([^"]+)"/)
+    const filename = m?.[1] ?? `compare_${left}_vs_${right}.csv`
+    await downloadBlob(filename, blob)
+    return blob
+  } else {
+    return res.json()
+  }
 }

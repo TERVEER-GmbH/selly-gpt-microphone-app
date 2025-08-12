@@ -213,24 +213,36 @@ class CosmosAdminClient(BaseCosmosClient):
             logger.error("add_result: Fehler beim Patchen des Status für Run %s: %s", run_id, e, exc_info=True)
             raise
 
-
-    async def list_runs(self, status: Optional[str] = None) -> List[TestRun]:
+    async def list_runs(self,
+                        status: Optional[str] = None,
+                        offset: Optional[int] = None,
+                        limit: Optional[int] = None) -> List[TestRun]:
         """
-        Liefert Metadaten aller TestRuns zurück (ohne embedded results).
-        Filtert optional nach status.
+        Liefert Metadaten aller TestRuns (ohne embedded results).
+        Optional: Pagination via OFFSET/LIMIT, sortiert nach created_at DESC.
         """
+        # Basisquery
         query = "SELECT * FROM c"
-        parameters = []
+        parameters: List[Dict[str, Any]] = []
         if status:
             query += " WHERE c.status = @status"
-            parameters = [{"name": "@status", "value": status}]
+            parameters.append({"name": "@status", "value": status})
+
+        query += " ORDER BY c.created_at DESC"
+
+        # OFFSET/LIMIT nur anhängen, wenn gewünscht
+        if offset is not None or limit is not None:
+            off = int(offset or 0)
+            lim = int(limit or 1000)  # sane default
+            query += f" OFFSET {off} LIMIT {lim}"
 
         runs: List[TestRun] = []
         try:
             iterator = self.run_container.query_items(query=query, parameters=parameters)
             async for doc in iterator:
                 runs.append(TestRun.from_dict(doc))
-            logger.debug("list_runs: Retrieved %d runs (status=%s)", len(runs), status)
+            logger.debug("list_runs: Retrieved %d runs (status=%s, offset=%s, limit=%s)",
+                        len(runs), status, offset, limit)
             return runs
         except CosmosHttpResponseError as e:
             logger.error("list_runs: Cosmos query failed: %s", e, exc_info=True)
@@ -260,13 +272,22 @@ class CosmosAdminClient(BaseCosmosClient):
             logger.exception("update_run: Unerwarteter Fehler beim Upsert von run %s", run.id)
             raise
 
-    async def list_results(self, run_id: str) -> List[TestResult]:
+    async def list_results(self,
+                        run_id: str,
+                        offset: Optional[int] = None,
+                        limit: Optional[int] = None) -> List[TestResult]:
         """
-        Holt alle TestResult-Dokumente für einen Run aus dem result_container
-        (Partition-Key = run_id).
+        Holt TestResult-Dokumente für einen Run (Partition-Key = run_id),
+        optional paginiert, sortiert nach timestamp DESC (ISO8601).
         """
-        query = "SELECT * FROM c WHERE c.run_id = @run_id"
+        query = "SELECT * FROM c WHERE c.run_id = @run_id ORDER BY c.timestamp DESC"
         params = [{"name": "@run_id", "value": run_id}]
+
+        if offset is not None or limit is not None:
+            off = int(offset or 0)
+            lim = int(limit or 1000)
+            query += f" OFFSET {off} LIMIT {lim}"
+
         results: List[TestResult] = []
         try:
             iterator = self.result_container.query_items(
@@ -276,7 +297,8 @@ class CosmosAdminClient(BaseCosmosClient):
             )
             async for doc in iterator:
                 results.append(TestResult.from_dict(doc))
-            logger.debug("list_results: Gefunden %d Ergebnisse für Run %s", len(results), run_id)
+            logger.debug("list_results: %d Ergebnisse für Run %s (offset=%s, limit=%s)",
+                        len(results), run_id, offset, limit)
             return results
         except Exception as e:
             logger.error("list_results: Fehler beim Lesen der Ergebnisse für Run %s: %s", run_id, e, exc_info=True)
@@ -389,14 +411,15 @@ class CosmosAdminClient(BaseCosmosClient):
             )
             raise
 
-
     async def compute_run_metrics(self, run_id: str) -> Dict[str, Any]:
         """
         Aggregiert Metriken für einen Run:
         - count: Anzahl Ergebnisse
         - category_averages: Mittelwerte pro Kategorie
         - avg_subscore: Mittelwert der Prompt-Subscores (Subscore = Mittel der 5 Kategorien)
-        - overall_score: Mittelwert der Prompt-Gesamtscores (Produkt der 5 Kategorien)
+        - overall_score: Mittelwert der Prompt-Gesamtscores (Produkt der 5 Kategorien) [Legacy]
+        - product_score_avg: arithm. Mittel der rohen Produkte (1..3125, kann 0 sein falls Felder fehlen)
+        - product_score_norm_avg: arithm. Mittel der normierten Produkte (fünftte Wurzel, ideal 1..5, kann 0 sein)
         """
         results = await self.list_results(run_id)
         n = len(results)
@@ -411,24 +434,37 @@ class CosmosAdminClient(BaseCosmosClient):
                     "comprehensibility": 0.0,
                 },
                 "avg_subscore": 0.0,
-                "overall_score": 0.0,
+                "overall_score": 0.0,          # legacy
+                "product_score_avg": 0.0,
+                "product_score_norm_avg": 0.0,
             }
 
-        sum_relevance = sum(r.relevance for r in results)
-        sum_factual   = sum(r.factual_accuracy for r in results)
-        sum_complete  = sum(r.completeness for r in results)
-        sum_tone      = sum(r.tone for r in results)
-        sum_comp      = sum(r.comprehensibility for r in results)
+        sum_relevance = sum(float(getattr(r, "relevance", 0) or 0) for r in results)
+        sum_factual   = sum(float(getattr(r, "factual_accuracy", 0) or 0) for r in results)
+        sum_complete  = sum(float(getattr(r, "completeness", 0) or 0) for r in results)
+        sum_tone      = sum(float(getattr(r, "tone", 0) or 0) for r in results)
+        sum_comp      = sum(float(getattr(r, "comprehensibility", 0) or 0) for r in results)
 
-        # per-prompt subscore & product
-        subscores = [
-            (r.relevance + r.factual_accuracy + r.completeness + r.tone + r.comprehensibility) / 5.0
-            for r in results
-        ]
-        products = [
-            (r.relevance * r.factual_accuracy * r.completeness * r.tone * r.comprehensibility)
-            for r in results
-        ]
+        subscores = []
+        products_raw = []
+        products_norm = []
+
+        for r in results:
+            rel  = float(getattr(r, "relevance", 0) or 0)
+            fact = float(getattr(r, "factual_accuracy", 0) or 0)
+            comp = float(getattr(r, "completeness", 0) or 0)
+            tone = float(getattr(r, "tone", 0) or 0)
+            compr= float(getattr(r, "comprehensibility", 0) or 0)
+
+            sub = (rel + fact + comp + tone + compr) / 5.0
+            subscores.append(sub)
+
+            prod = rel * fact * comp * tone * compr  # kann 0 sein (wenn alte 0.0-Defaults)
+            products_raw.append(prod)
+
+            # Normierung auf 1..5 gedacht; wenn prod==0 -> 0
+            prod_norm = prod ** (1.0 / 5.0) if prod > 0 else 0.0
+            products_norm.append(prod_norm)
 
         return {
             "count": n,
@@ -439,8 +475,10 @@ class CosmosAdminClient(BaseCosmosClient):
                 "tone":              sum_tone / n,
                 "comprehensibility": sum_comp / n,
             },
-            "avg_subscore": sum(subscores) / n,
-            "overall_score": sum(products) / n,
+            "avg_subscore":           sum(subscores) / n,
+            "overall_score":          sum(products_raw) / n,   # legacy beibehalten
+            "product_score_avg":      sum(products_raw) / n,
+            "product_score_norm_avg": sum(products_norm) / n,
         }
 
     async def run_tests(self,

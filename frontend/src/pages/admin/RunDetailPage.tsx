@@ -36,21 +36,43 @@ import ResultEditDialog from '../../components/ResultEditDialog/ResultEditDialog
 
 /* ===== Helpers ===== */
 
-function fmt(n: number | undefined): string {
+function fmt2(n: number | undefined): string {
   return typeof n === 'number' && Number.isFinite(n) ? n.toFixed(2) : '—'
+}
+function fmt0(n: number | undefined): string {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '—'
+  // PQS ist i.d.R. ganzzahlig (1..3125), aber wir runden sicherheitshalber
+  return Math.round(n).toString()
+}
+
+function getScores(r: TestResult) {
+  const x = r as unknown as Record<string, any>
+  const rel  = Number.isFinite(x.relevance) ? Number(x.relevance) : 0
+  const fact = Number.isFinite(x.factual_accuracy) ? Number(x.factual_accuracy) : 0
+  const comp = Number.isFinite(x.completeness) ? Number(x.completeness) : 0
+  const tone = Number.isFinite(x.tone) ? Number(x.tone) : 0
+  const compr= Number.isFinite(x.comprehensibility) ? Number(x.comprehensibility) : 0
+  return { rel, fact, comp, tone, compr }
 }
 
 function subscore(r: TestResult): number {
-  const x = r as unknown as Record<string, any>
-  const vals = [
-    Number.isFinite(x.relevance) ? x.relevance : 0,
-    Number.isFinite(x.factual_accuracy) ? x.factual_accuracy : 0,
-    Number.isFinite(x.completeness) ? x.completeness : 0,
-    Number.isFinite(x.tone) ? x.tone : 0,
-    Number.isFinite(x.comprehensibility) ? x.comprehensibility : 0,
-  ]
+  const { rel, fact, comp, tone, compr } = getScores(r)
+  const vals = [rel, fact, comp, tone, compr]
   const sum = vals.reduce((a, b) => a + b, 0)
   return vals.length ? sum / vals.length : 0
+}
+
+/** PQS = rohes Produkt der fünf Kategorien (1..3125; 0 wenn etwas fehlt) */
+function pqsRaw(r: TestResult): number {
+  const { rel, fact, comp, tone, compr } = getScores(r)
+  if ([rel, fact, comp, tone, compr].some(v => v <= 0)) return 0
+  return rel * fact * comp * tone * compr
+}
+
+/** nur fürs Farbschema nutzen wir die 5. Wurzel (1..5) */
+function pqsNorm(r: TestResult): number {
+  const raw = pqsRaw(r)
+  return raw > 0 ? Math.pow(raw, 1 / 5) : 0
 }
 
 function scoreColor(n: number): ChipProps['color'] {
@@ -110,12 +132,10 @@ function ResultRow({
 }) {
   const [open, setOpen] = React.useState(false)
 
-  const rel  = (r as any).relevance
-  const fact = (r as any).factual_accuracy
-  const comp = (r as any).completeness
-  const tone = (r as any).tone
-  const compr= (r as any).comprehensibility
+  const { rel, fact, comp, tone, compr } = getScores(r)
   const avg  = subscore(r)
+  const pqs  = pqsRaw(r)
+  const pqsN = pqsNorm(r) // nur für Chip-Farbe
 
   return (
     <React.Fragment key={r.id}>
@@ -140,22 +160,28 @@ function ResultRow({
         </TableCell>
 
         <TableCell align="center">
-          <Chip size="small" label={fmt(rel)} color={scoreColor(rel ?? 0)} />
+          <Chip size="small" label={fmt2(rel)} color={scoreColor(rel)} />
         </TableCell>
         <TableCell align="center">
-          <Chip size="small" label={fmt(fact)} color={scoreColor(fact ?? 0)} />
+          <Chip size="small" label={fmt2(fact)} color={scoreColor(fact)} />
         </TableCell>
         <TableCell align="center">
-          <Chip size="small" label={fmt(comp)} color={scoreColor(comp ?? 0)} />
+          <Chip size="small" label={fmt2(comp)} color={scoreColor(comp)} />
         </TableCell>
         <TableCell align="center">
-          <Chip size="small" label={fmt(tone)} color={scoreColor(tone ?? 0)} />
+          <Chip size="small" label={fmt2(tone)} color={scoreColor(tone)} />
         </TableCell>
         <TableCell align="center">
-          <Chip size="small" label={fmt(compr)} color={scoreColor(compr ?? 0)} />
+          <Chip size="small" label={fmt2(compr)} color={scoreColor(compr)} />
         </TableCell>
+
+        {/* PQS (roh) */}
         <TableCell align="center">
-          <Chip size="small" label={fmt(avg)} color={scoreColor(avg)} />
+          <Chip size="small" label={fmt0(pqs)} color={scoreColor(pqsN)} />
+        </TableCell>
+
+        <TableCell align="center">
+          <Chip size="small" label={fmt2(avg)} color={scoreColor(avg)} />
         </TableCell>
 
         <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
@@ -166,12 +192,12 @@ function ResultRow({
       </TableRow>
 
       <TableRow>
-        <TableCell colSpan={10} sx={{ p: 0, border: 0 }}>
+        <TableCell colSpan={11} sx={{ p: 0, border: 0 }}>
           <Collapse in={open} timeout="auto" unmountOnExit>
             <Box
               sx={{
                 p: 2,
-                bgcolor: (t) => t.palette.action.hover, // <<— dezenter Grauton
+                bgcolor: (t) => t.palette.action.hover, // dezenter Grauton
                 borderTop: '1px solid',
                 borderColor: 'divider',
                 borderRadius: 1,
@@ -203,6 +229,17 @@ function ResultRow({
                   <Divider sx={{ my: 1 }} />
                 </Grid>
 
+                {/* PQS Info */}
+                <Grid size={{ xs: 12 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    PQS (Prompting Quality Score) = Produkt der fünf Kategorien (1–5). Rohwert (1..3125).
+                  </Typography>
+                  <Typography variant="body2" sx={{ mt: 0.5 }}>
+                    PQS: <strong>{fmt0(pqs)}</strong>
+                  </Typography>
+                </Grid>
+
+                {/* optionale Kommentare */}
                 {Boolean((r as any).relevance_comment) && (
                   <Grid size={{ xs: 12, sm: 6 }}>
                     <Typography variant="caption" color="text.secondary">
@@ -304,6 +341,7 @@ const RunDetailPage: React.FC = () => {
     loadAll()
   }, [loadAll])
 
+  // Polling pausieren, wenn Dialog offen
   React.useEffect(() => {
     if (!runId) return
     if (!status || status.status === 'Done') return
@@ -347,6 +385,10 @@ const RunDetailPage: React.FC = () => {
 
   const progress =
     status ? Math.min(100, Math.round((status.completed / Math.max(1, status.total)) * 100)) : 0
+
+  // KPI: PQS Ø & Subscore Ø (aus den Ergebnissen berechnet)
+  const avgSub = results.length ? results.reduce((a, r) => a + subscore(r), 0) / results.length : 0
+  const avgPQS = results.length ? results.reduce((a, r) => a + pqsRaw(r), 0) / results.length : 0
 
   return (
     <Container sx={{ py: 3 }}>
@@ -418,13 +460,16 @@ const RunDetailPage: React.FC = () => {
             )}
           </Grid>
 
+          {/* KPIs: PQS Ø (roh) + Subscore Ø */}
           <Grid size={{ xs: 12, sm: 6 }}>
             <Typography variant="body2" color="text.secondary">
-              Aggregierter Subscore (Ø der fünf Kategorien)
+              PQS Ø (Prompting Quality Score, roh)
             </Typography>
-            <Typography variant="h6">
-              {results.length ? fmt(results.reduce((a, r) => a + subscore(r), 0) / results.length) : '—'}
+            <Typography variant="h6">{results.length ? fmt0(avgPQS) : '—'}</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Subscore Ø
             </Typography>
+            <Typography variant="h6">{results.length ? fmt2(avgSub) : '—'}</Typography>
           </Grid>
         </Grid>
       </Paper>
@@ -447,6 +492,7 @@ const RunDetailPage: React.FC = () => {
                 <TableCell align="center">Comp.</TableCell>
                 <TableCell align="center">Tone</TableCell>
                 <TableCell align="center">Compr.</TableCell>
+                <TableCell align="center">PQS</TableCell>
                 <TableCell align="center">Ø</TableCell>
                 <TableCell align="right">Aktion</TableCell>
               </TableRow>
@@ -457,7 +503,7 @@ const RunDetailPage: React.FC = () => {
               ))}
               {(!results || results.length === 0) && !loading && (
                 <TableRow>
-                  <TableCell colSpan={10} align="center">
+                  <TableCell colSpan={11} align="center">
                     <Typography variant="body2" color="text.secondary">
                       Noch keine Ergebnisse vorhanden.
                     </Typography>
