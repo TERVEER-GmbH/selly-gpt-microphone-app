@@ -465,13 +465,15 @@ export async function testPrompt(
 
 export async function startRun(
   promptIds: string[],
-  params: TestParams
+  params: TestParams,
+  name?: string
 ): Promise<string> {
   const resp = await fetch('/admin/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt_ids: promptIds, params })
+    body: JSON.stringify({ prompt_ids: promptIds, params, ...(name ? { name } : {}) })
   });
+  if (!resp.ok) throw new Error(`startRun failed: ${resp.status}`);
   const { run_id } = await resp.json();
   return run_id;
 }
@@ -600,4 +602,13 @@ export async function exportCompare(
   } else {
     return res.json()
   }
+}
+
+export async function renameRun(runId: string, name: string): Promise<void> {
+  const r = await fetch(`/admin/runs/${encodeURIComponent(runId)}/name`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  if (!r.ok) throw new Error(`Rename failed: ${r.status}`);
 }

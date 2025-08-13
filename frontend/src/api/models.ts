@@ -218,6 +218,7 @@ export type TestResultUpdate = Partial<Pick<
 
 export interface RunSummary {
   id: string;
+  name?: string;
   prompt_ids: string[];
   params: TestParams;
   status: 'Pending' | 'Running' | 'Done';
@@ -228,6 +229,7 @@ export interface RunSummary {
 // bereits vorhanden: RunStatus für /status
 export interface RunStatus {
   run_id: string;
+  name?: string;
   prompt_ids: string[];
   params: TestParams;
   status: 'Pending' | 'Running' | 'Done';
@@ -251,19 +253,20 @@ export interface RunMetrics {
 }
 
 export interface RunListItem {
-  id: string
-  prompt_ids: string[]
-  params: TestParams
-  status: 'Pending' | 'Running' | 'Done'
-  created_at: string
-  metrics?: RunMetrics
+  id: string;
+  name?: string;
+  prompt_ids: string[];
+  params: TestParams;
+  status: 'Pending' | 'Running' | 'Done';
+  created_at: string;
+  metrics?: RunMetrics;
 }
 
 export interface CompareSummary {
-  left:  { run_id: string; count: number; avg_subscore: number; product_score_norm_avg: number; };
-  right: { run_id: string; count: number; avg_subscore: number; product_score_norm_avg: number; };
+  left:  { run_id: string; name?: string; count: number; avg_subscore: number; product_score_avg: number; product_score_norm_avg: number; };
+  right: { run_id: string; name?: string; count: number; avg_subscore: number; product_score_avg: number; product_score_norm_avg: number; };
   coverage: { intersection: number; left_only: number; right_only: number; union: number; };
-  delta: { avg_subscore: number; product_score_norm_avg: number; };
+  delta: { avg_subscore: number; product_score_avg: number; product_score_norm_avg: number; };
 }
 
 export interface ComparePairSide {
@@ -313,3 +316,5 @@ export interface CompareFull {
 
 // Hilfstyp, falls du sowohl RunSummary als auch RunListItem im Projekt hast
 export type RunWithMetrics<Base extends { id: string } = any> = Base & { metrics: RunMetrics };
+
+export type RunOption = { id: string; name: string; label: string };

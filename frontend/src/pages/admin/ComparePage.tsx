@@ -13,7 +13,8 @@ import SwapHorizIcon from '@mui/icons-material/SwapHoriz'
 import type { CompareFull, ComparePair, RunListItem } from '../../api/models'
 import { compareRuns, exportCompare, getRuns } from '../../api/api'
 
-const fmt = (n?: number) => (typeof n === 'number' ? n.toFixed(2) : '—')
+const fmt2 = (n?: number) => (typeof n === 'number' && Number.isFinite(n) ? n.toFixed(2) : '—')
+const fmt0 = (n?: number) => (typeof n === 'number' && Number.isFinite(n) ? Math.round(n).toString() : '—')
 const truncate = (s: string, len = 120) => (s && s.length > len ? s.slice(0, len - 1) + '…' : s)
 
 type RowFilter = 'all' | 'matched' | 'left_only' | 'right_only'
@@ -57,6 +58,7 @@ const ComparePage: React.FC = () => {
   const [order, setOrder] = React.useState<'asc' | 'desc'>('desc')
   const [orderBy, setOrderBy] = React.useState<SortKey>('delta_pqs')
 
+  // Runs für Picker laden
   React.useEffect(() => {
     const loadRuns = async () => {
       setRunsLoading(true)
@@ -74,6 +76,7 @@ const ComparePage: React.FC = () => {
     loadRuns()
   }, [])
 
+  // Vergleich laden
   const load = React.useCallback(async () => {
     if (!left || !right) { setData(null); return }
     setError(null)
@@ -91,6 +94,7 @@ const ComparePage: React.FC = () => {
 
   React.useEffect(() => { load() }, [load])
 
+  // URL param setter
   const setLeft = (id?: string | null) => {
     const next = new URLSearchParams(sp)
     if (id) next.set('left', id); else next.delete('left')
@@ -124,7 +128,6 @@ const ComparePage: React.FC = () => {
     if (filter !== 'all') rows = rows.filter(p => (typeLabel(p) === filter))
     const getter = (p: ComparePair, k: SortKey) => {
       if (k === 'delta_pqs') {
-        // matched -> delta; left_only groß positiv; right_only groß negativ (damit sortierbar)
         return p.matched ? (p.right.product_score_raw - p.left.product_score_raw)
              : (p.side === 'left_only' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY)
       }
@@ -146,9 +149,25 @@ const ComparePage: React.FC = () => {
     return [...rows].sort(cmp)
   }, [data, filter, order, orderBy])
 
-  const pqsAvgLeft  = data ? avgPqsFromPairs(data.pairs, 'left')  : undefined
-  const pqsAvgRight = data ? avgPqsFromPairs(data.pairs, 'right') : undefined
+  // KPIs: Namen & PQS Ø (raw)
+  const nameLeft  = data ? ((data.summary as any)?.left?.name ?? runA?.name ?? data.summary.left.run_id) : undefined
+  const nameRight = data ? ((data.summary as any)?.right?.name ?? runB?.name ?? data.summary.right.run_id) : undefined
+
+  const pqsAvgLeftFromSummary  = data ? (data.summary as any)?.left?.product_score_avg  as number | undefined : undefined
+  const pqsAvgRightFromSummary = data ? (data.summary as any)?.right?.product_score_avg as number | undefined : undefined
+
+  const pqsAvgLeft  = pqsAvgLeftFromSummary  ?? (data ? avgPqsFromPairs(data.pairs, 'left')  : undefined)
+  const pqsAvgRight = pqsAvgRightFromSummary ?? (data ? avgPqsFromPairs(data.pairs, 'right') : undefined)
   const pqsDelta    = (pqsAvgLeft != null && pqsAvgRight != null) ? (pqsAvgRight - pqsAvgLeft) : undefined
+
+  // Option Label helper (Name || ID + Datum + PQS Ø)
+  const optionLabel = (opt: RunListItem | null) => {
+    if (!opt) return ''
+    const label = opt.name || opt.id
+    const date  = new Date(opt.created_at).toLocaleString()
+    const pqs   = fmt2(opt.metrics?.product_score_avg)
+    return `${label} — ${date} — PQS Ø: ${pqs}`
+  }
 
   return (
     <Container sx={{ py: 3 }}>
@@ -163,25 +182,25 @@ const ComparePage: React.FC = () => {
         <Box sx={{ flexGrow: 1 }} />
 
         {/* Run Selectors */}
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }}>
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'stretch', md: 'center' }}>
           <Autocomplete<RunListItem>
-            sx={{ minWidth: 260 }}
+            sx={{ minWidth: 320 }}
             options={runs}
             loading={runsLoading}
             value={runA}
             onChange={(_, v) => setLeft(v?.id)}
-            getOptionLabel={(opt) => opt ? `${opt.id} — ${new Date(opt.created_at).toLocaleString()} — PQS Ø: ${fmt(opt.metrics?.product_score_avg)}` : ''}
+            getOptionLabel={optionLabel}
             isOptionEqualToValue={(o, v) => o.id === v.id}
             renderInput={(params) => <TextField {...params} label="Run A wählen" placeholder="Run suchen…" size="small" />}
           />
           <IconButton aria-label="A ↔ B tauschen" onClick={swapLR}><SwapHorizIcon /></IconButton>
           <Autocomplete<RunListItem>
-            sx={{ minWidth: 260 }}
+            sx={{ minWidth: 320 }}
             options={runs}
             loading={runsLoading}
             value={runB}
             onChange={(_, v) => setRight(v?.id)}
-            getOptionLabel={(opt) => opt ? `${opt.id} — ${new Date(opt.created_at).toLocaleString()} — PQS Ø: ${fmt(opt.metrics?.product_score_avg)}` : ''}
+            getOptionLabel={optionLabel}
             isOptionEqualToValue={(o, v) => o.id === v.id}
             renderInput={(params) => <TextField {...params} label="Run B wählen" placeholder="Run suchen…" size="small" />}
           />
@@ -209,20 +228,30 @@ const ComparePage: React.FC = () => {
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
             <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
               <Typography variant="subtitle2" color="text.secondary">Run A</Typography>
-              <Typography variant="body2" sx={{ mb: 1 }}>{data.summary.left.run_id}</Typography>
+              <Typography variant="body1" sx={{ mb: 1, fontWeight: 600 }}>
+                {nameLeft}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                {data.summary.left.run_id}
+              </Typography>
               <Stack direction="row" spacing={2}>
-                <Chip label={`PQS Ø: ${fmt(pqsAvgLeft)}`} color="primary" />
-                <Chip label={`Subscore Ø: ${fmt(data.summary.left.avg_subscore)}`} />
+                <Chip label={`PQS Ø: ${fmt2(pqsAvgLeft)}`} color="primary" />
+                <Chip label={`Subscore Ø: ${fmt2(data.summary.left.avg_subscore)}`} />
                 <Chip label={`N: ${data.summary.left.count}`} />
               </Stack>
             </Paper>
 
             <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
               <Typography variant="subtitle2" color="text.secondary">Run B</Typography>
-              <Typography variant="body2" sx={{ mb: 1 }}>{data.summary.right.run_id}</Typography>
+              <Typography variant="body1" sx={{ mb: 1, fontWeight: 600 }}>
+                {nameRight}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                {data.summary.right.run_id}
+              </Typography>
               <Stack direction="row" spacing={2}>
-                <Chip label={`PQS Ø: ${fmt(pqsAvgRight)}`} color="primary" />
-                <Chip label={`Subscore Ø: ${fmt(data.summary.right.avg_subscore)}`} />
+                <Chip label={`PQS Ø: ${fmt2(pqsAvgRight)}`} color="primary" />
+                <Chip label={`Subscore Ø: ${fmt2(data.summary.right.avg_subscore)}`} />
                 <Chip label={`N: ${data.summary.right.count}`} />
               </Stack>
             </Paper>
@@ -240,7 +269,7 @@ const ComparePage: React.FC = () => {
                   mt: 0.5,
                 }}
               >
-                <Chip size="small" label={`Δ PQS Ø: ${fmt(pqsDelta)}`} color="secondary" />
+                <Chip size="small" label={`Δ PQS Ø: ${fmt2(pqsDelta)}`} color="secondary" />
                 <Chip size="small" label={`Intersection: ${data.summary.coverage.intersection}`} />
                 <Chip size="small" label={`Union: ${data.summary.coverage.union}`} />
                 <Chip size="small" label={`Left only: ${data.summary.coverage.left_only}`} />
@@ -345,11 +374,11 @@ const ComparePage: React.FC = () => {
                     {aiB ? <Tooltip title={aiB}><span>{truncate(aiB, 160)}</span></Tooltip> : <Typography variant="body2" color="text.disabled">—</Typography>}
                   </TableCell>
 
-                  <TableCell align="right">{fmt(pqsA)}</TableCell>
-                  <TableCell align="right">{fmt(pqsB)}</TableCell>
-                  <TableCell align="right">{fmt(delta)}</TableCell>
-                  <TableCell align="right">{fmt(subA)}</TableCell>
-                  <TableCell align="right">{fmt(subB)}</TableCell>
+                  <TableCell align="right">{fmt2(pqsA)}</TableCell>
+                  <TableCell align="right">{fmt2(pqsB)}</TableCell>
+                  <TableCell align="right">{fmt2(delta)}</TableCell>
+                  <TableCell align="right">{fmt2(subA)}</TableCell>
+                  <TableCell align="right">{fmt2(subB)}</TableCell>
                 </TableRow>
               )
             })}

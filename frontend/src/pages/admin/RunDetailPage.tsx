@@ -1,319 +1,20 @@
-// src/pages/admin/RunDetailPage.tsx
 import React from 'react'
-import { useParams, Link as RouterLink } from 'react-router-dom'
-import {
-  Box,
-  Button,
-  Chip,
-  Container,
-  LinearProgress,
-  Paper,
-  Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  Tooltip,
-  Typography,
-  IconButton,
-  Divider,
-  Alert,
-  Collapse,
-} from '@mui/material'
-import type { ChipProps } from '@mui/material'
-import Grid from '@mui/material/Grid'
-import EditIcon from '@mui/icons-material/Edit'
-import RefreshIcon from '@mui/icons-material/Refresh'
-import ArrowBackIcon from '@mui/icons-material/ArrowBack'
-import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown'
-import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp'
-
-import { getRunStatus, getRunResults, patchRunResult } from '../../api/api'
+import { useParams } from 'react-router-dom'
+import { Box, Container, Paper, Stack, Alert } from '@mui/material'
+import { getRunStatus, getRunResults, patchRunResult, renameRun } from '../../api/api'
 import type { RunStatus, TestResult, TestResultUpdate } from '../../api/models'
 import ResultEditDialog from '../../components/ResultEditDialog/ResultEditDialog'
+import RenameRunDialog from '../../components/admin/RenameRunDialog'
 
-/* ===== Helpers ===== */
-
-function fmt2(n: number | undefined): string {
-  return typeof n === 'number' && Number.isFinite(n) ? n.toFixed(2) : '—'
-}
-function fmt0(n: number | undefined): string {
-  if (typeof n !== 'number' || !Number.isFinite(n)) return '—'
-  // PQS ist i.d.R. ganzzahlig (1..3125), aber wir runden sicherheitshalber
-  return Math.round(n).toString()
-}
-
-function getScores(r: TestResult) {
-  const x = r as unknown as Record<string, any>
-  const rel  = Number.isFinite(x.relevance) ? Number(x.relevance) : 0
-  const fact = Number.isFinite(x.factual_accuracy) ? Number(x.factual_accuracy) : 0
-  const comp = Number.isFinite(x.completeness) ? Number(x.completeness) : 0
-  const tone = Number.isFinite(x.tone) ? Number(x.tone) : 0
-  const compr= Number.isFinite(x.comprehensibility) ? Number(x.comprehensibility) : 0
-  return { rel, fact, comp, tone, compr }
-}
-
-function subscore(r: TestResult): number {
-  const { rel, fact, comp, tone, compr } = getScores(r)
-  const vals = [rel, fact, comp, tone, compr]
-  const sum = vals.reduce((a, b) => a + b, 0)
-  return vals.length ? sum / vals.length : 0
-}
-
-/** PQS = rohes Produkt der fünf Kategorien (1..3125; 0 wenn etwas fehlt) */
-function pqsRaw(r: TestResult): number {
-  const { rel, fact, comp, tone, compr } = getScores(r)
-  if ([rel, fact, comp, tone, compr].some(v => v <= 0)) return 0
-  return rel * fact * comp * tone * compr
-}
-
-/** nur fürs Farbschema nutzen wir die 5. Wurzel (1..5) */
-function pqsNorm(r: TestResult): number {
-  const raw = pqsRaw(r)
-  return raw > 0 ? Math.pow(raw, 1 / 5) : 0
-}
-
-function scoreColor(n: number): ChipProps['color'] {
-  if (!Number.isFinite(n)) return 'default'
-  if (n >= 4.5) return 'success'
-  if (n >= 3.5) return 'info'
-  if (n >= 2.5) return 'warning'
-  return 'error'
-}
-
-function shortGolden(text: string, max = 120): string {
-  if (!text) return ''
-  const t = text.trim()
-  if (t.length <= max) return t
-  const cut = t.slice(0, max).replace(/\s+\S*$/, '')
-  return `${cut}…`
-}
-
-function ClampText({
-  text,
-  lines = 2,
-  title,
-}: {
-  text: string
-  lines?: number
-  title?: string
-}) {
-  return (
-    <Tooltip title={title ?? text}>
-      <Typography
-        variant="body2"
-        sx={{
-          display: '-webkit-box',
-          WebkitBoxOrient: 'vertical',
-          WebkitLineClamp: lines,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'normal',
-        }}
-      >
-        {text}
-      </Typography>
-    </Tooltip>
-  )
-}
+import RunHeader from '../../components/run-detail/RunHeader'
+import RunKPIs from '../../components/run-detail/RunKPIs'
+import ResultsToolbar from '../../components/run-detail/ResultsToolbar'
+import ResultsTable from '../../components/run-detail/ResultsTable'
 
 const POLL_MS = 1200
 
-/* ===== Row-Komponente (kompakt + aufklappbar) ===== */
-
-function ResultRow({
-  r,
-  onEdit,
-}: {
-  r: TestResult
-  onEdit: (r: TestResult) => void
-}) {
-  const [open, setOpen] = React.useState(false)
-
-  const { rel, fact, comp, tone, compr } = getScores(r)
-  const avg  = subscore(r)
-  const pqs  = pqsRaw(r)
-  const pqsN = pqsNorm(r) // nur für Chip-Farbe
-
-  return (
-    <React.Fragment key={r.id}>
-      <TableRow hover>
-        <TableCell padding="checkbox" sx={{ width: 40 }}>
-          <IconButton size="small" onClick={() => setOpen(s => !s)}>
-            {open ? <KeyboardArrowUpIcon /> : <KeyboardArrowDownIcon />}
-          </IconButton>
-        </TableCell>
-
-        <TableCell sx={{ maxWidth: 520 }}>
-          <Box sx={{ mb: 0.5 }}>
-            <ClampText text={r.prompt_text} lines={2} />
-          </Box>
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-            Golden: {shortGolden(r.golden_answer, 140)}
-          </Typography>
-        </TableCell>
-
-        <TableCell sx={{ maxWidth: 560 }}>
-          <ClampText text={r.ai_response} lines={2} />
-        </TableCell>
-
-        <TableCell align="center">
-          <Chip size="small" label={fmt2(rel)} color={scoreColor(rel)} />
-        </TableCell>
-        <TableCell align="center">
-          <Chip size="small" label={fmt2(fact)} color={scoreColor(fact)} />
-        </TableCell>
-        <TableCell align="center">
-          <Chip size="small" label={fmt2(comp)} color={scoreColor(comp)} />
-        </TableCell>
-        <TableCell align="center">
-          <Chip size="small" label={fmt2(tone)} color={scoreColor(tone)} />
-        </TableCell>
-        <TableCell align="center">
-          <Chip size="small" label={fmt2(compr)} color={scoreColor(compr)} />
-        </TableCell>
-
-        {/* PQS (roh) */}
-        <TableCell align="center">
-          <Chip size="small" label={fmt0(pqs)} color={scoreColor(pqsN)} />
-        </TableCell>
-
-        <TableCell align="center">
-          <Chip size="small" label={fmt2(avg)} color={scoreColor(avg)} />
-        </TableCell>
-
-        <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-          <IconButton color="primary" onClick={() => onEdit(r)}>
-            <EditIcon />
-          </IconButton>
-        </TableCell>
-      </TableRow>
-
-      <TableRow>
-        <TableCell colSpan={11} sx={{ p: 0, border: 0 }}>
-          <Collapse in={open} timeout="auto" unmountOnExit>
-            <Box
-              sx={{
-                p: 2,
-                bgcolor: (t) => t.palette.action.hover, // dezenter Grauton
-                borderTop: '1px solid',
-                borderColor: 'divider',
-                borderRadius: 1,
-              }}
-            >
-              <Grid container spacing={2} sx={{ width: '100%' }}>
-                <Grid size={{ xs: 12 }}>
-                  <Typography variant="subtitle2">Prompt</Typography>
-                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                    {r.prompt_text}
-                  </Typography>
-                </Grid>
-
-                <Grid size={{ xs: 12 }}>
-                  <Typography variant="subtitle2">Golden Answer</Typography>
-                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                    {r.golden_answer}
-                  </Typography>
-                </Grid>
-
-                <Grid size={{ xs: 12 }}>
-                  <Typography variant="subtitle2">AI-Antwort</Typography>
-                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                    {r.ai_response}
-                  </Typography>
-                </Grid>
-
-                <Grid size={{ xs: 12 }}>
-                  <Divider sx={{ my: 1 }} />
-                </Grid>
-
-                {/* PQS Info */}
-                <Grid size={{ xs: 12 }}>
-                  <Typography variant="caption" color="text.secondary">
-                    PQS (Prompting Quality Score) = Produkt der fünf Kategorien (1–5). Rohwert (1..3125).
-                  </Typography>
-                  <Typography variant="body2" sx={{ mt: 0.5 }}>
-                    PQS: <strong>{fmt0(pqs)}</strong>
-                  </Typography>
-                </Grid>
-
-                {/* optionale Kommentare */}
-                {Boolean((r as any).relevance_comment) && (
-                  <Grid size={{ xs: 12, sm: 6 }}>
-                    <Typography variant="caption" color="text.secondary">
-                      Relevanz – Kommentar
-                    </Typography>
-                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                      {(r as any).relevance_comment}
-                    </Typography>
-                  </Grid>
-                )}
-                {Boolean((r as any).factual_accuracy_comment) && (
-                  <Grid size={{ xs: 12, sm: 6 }}>
-                    <Typography variant="caption" color="text.secondary">
-                      Faktentreue – Kommentar
-                    </Typography>
-                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                      {(r as any).factual_accuracy_comment}
-                    </Typography>
-                  </Grid>
-                )}
-                {Boolean((r as any).completeness_comment) && (
-                  <Grid size={{ xs: 12, sm: 6 }}>
-                    <Typography variant="caption" color="text.secondary">
-                      Vollständigkeit – Kommentar
-                    </Typography>
-                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                      {(r as any).completeness_comment}
-                    </Typography>
-                  </Grid>
-                )}
-                {Boolean((r as any).tone_comment) && (
-                  <Grid size={{ xs: 12, sm: 6 }}>
-                    <Typography variant="caption" color="text.secondary">
-                      Tonalität – Kommentar
-                    </Typography>
-                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                      {(r as any).tone_comment}
-                    </Typography>
-                  </Grid>
-                )}
-                {Boolean((r as any).comprehensibility_comment) && (
-                  <Grid size={{ xs: 12 }}>
-                    <Typography variant="caption" color="text.secondary">
-                      Verständlichkeit – Kommentar
-                    </Typography>
-                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                      {(r as any).comprehensibility_comment}
-                    </Typography>
-                  </Grid>
-                )}
-                {Boolean((r as any).overall_comment) && (
-                  <Grid size={{ xs: 12 }}>
-                    <Divider sx={{ my: 1 }} />
-                    <Typography variant="caption" color="text.secondary">
-                      Gesamt-Kommentar
-                    </Typography>
-                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                      {(r as any).overall_comment}
-                    </Typography>
-                  </Grid>
-                )}
-              </Grid>
-            </Box>
-          </Collapse>
-        </TableCell>
-      </TableRow>
-    </React.Fragment>
-  )
-}
-
-/* ===== Seite ===== */
-
 const RunDetailPage: React.FC = () => {
-  const { runId } = useParams<{ runId: string }>()
+  const { runId = '' } = useParams<{ runId: string }>()
   const [status, setStatus] = React.useState<RunStatus | null>(null)
   const [results, setResults] = React.useState<TestResult[]>([])
   const [loading, setLoading] = React.useState<boolean>(true)
@@ -321,6 +22,15 @@ const RunDetailPage: React.FC = () => {
 
   const [editing, setEditing] = React.useState<TestResult | null>(null)
   const [saving, setSaving] = React.useState<boolean>(false)
+
+  // Rename
+  const [renameOpen, setRenameOpen] = React.useState(false)
+  const [renaming, setRenaming] = React.useState(false)
+
+  // UI state
+  const [query, setQuery] = React.useState('')
+  const [dense, setDense] = React.useState(false)
+  const [expandSignal, setExpandSignal] = React.useState<{ action: 'expand'|'collapse'; seq: number } | undefined>(undefined)
 
   const loadAll = React.useCallback(async () => {
     if (!runId) return
@@ -337,36 +47,22 @@ const RunDetailPage: React.FC = () => {
     }
   }, [runId])
 
-  React.useEffect(() => {
-    loadAll()
-  }, [loadAll])
+  React.useEffect(() => { loadAll() }, [loadAll])
 
-  // Polling pausieren, wenn Dialog offen
   React.useEffect(() => {
     if (!runId) return
     if (!status || status.status === 'Done') return
     if (editing) return
-
     const iv = window.setInterval(async () => {
       try {
         const st = await getRunStatus(runId)
         setStatus(st)
         const res = await getRunResults(runId)
         setResults(res)
-      } catch {
-        /* ignore */
-      }
+      } catch {}
     }, POLL_MS)
-
     return () => window.clearInterval(iv)
   }, [runId, status?.status, editing])
-
-  const handleRefresh = async () => {
-    await loadAll()
-  }
-
-  const handleOpenEdit = (r: TestResult) => setEditing(r)
-  const handleCloseEdit = () => setEditing(null)
 
   const handleSaveEdit = async (patch: TestResultUpdate) => {
     if (!runId || !editing) return
@@ -376,155 +72,86 @@ const RunDetailPage: React.FC = () => {
       setResults(prev => prev.map(r => (r.id === editing.id ? ({ ...r, ...patch } as TestResult) : r)))
       setEditing(null)
     } catch (e: any) {
-      console.error(e)
-      alert('Speichern fehlgeschlagen.')
-    } finally {
-      setSaving(false)
-    }
+      console.error(e); alert('Speichern fehlgeschlagen.')
+    } finally { setSaving(false) }
   }
 
-  const progress =
-    status ? Math.min(100, Math.round((status.completed / Math.max(1, status.total)) * 100)) : 0
+  const handleRename = async (newName: string) => {
+    if (!runId) return
+    try {
+      setRenaming(true)
+      await renameRun(runId, newName)
+      setStatus(prev => (prev ? { ...prev, name: newName } as RunStatus : prev))
+      setRenameOpen(false)
+    } catch (e) {
+      console.error(e); alert('Umbenennen fehlgeschlagen.')
+    } finally { setRenaming(false) }
+  }
 
-  // KPI: PQS Ø & Subscore Ø (aus den Ergebnissen berechnet)
-  const avgSub = results.length ? results.reduce((a, r) => a + subscore(r), 0) / results.length : 0
-  const avgPQS = results.length ? results.reduce((a, r) => a + pqsRaw(r), 0) / results.length : 0
+  const filtered = React.useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return results
+    return results.filter(r =>
+      r.prompt_text.toLowerCase().includes(q) ||
+      r.ai_response.toLowerCase().includes(q) ||
+      r.golden_answer.toLowerCase().includes(q)
+    )
+  }, [results, query])
 
   return (
-    <Container sx={{ py: 3 }}>
-      <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <Button component={RouterLink} to="/admin/runs" startIcon={<ArrowBackIcon />}>
-          Zurück zur Übersicht
-        </Button>
-        <Box sx={{ flexGrow: 1 }} />
-        <Button onClick={handleRefresh} startIcon={<RefreshIcon />} variant="outlined">
-          Aktualisieren
-        </Button>
-      </Stack>
+    <Container sx={{ py: 0 }}>
+      <RunHeader
+        runId={runId}
+        status={status}
+        onRefresh={loadAll}
+        onOpenRename={() => setRenameOpen(true)}
+      />
 
-      {error && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
-        </Alert>
-      )}
+      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
-      <Paper sx={{ p: 2, mb: 3 }}>
-        <Grid container spacing={2} sx={{ width: '100%' }}>
-          <Grid size={{ xs: 12 }}>
-            <Typography variant="h6">Run {status?.run_id ?? runId}</Typography>
-          </Grid>
+      {/* KPIs */}
+      <RunKPIs results={results} />
 
-          <Grid size={{ xs: 12, sm: 6 }}>
-            <Typography variant="body2" color="text.secondary">
-              Modell / Temperatur / Max Tokens
-            </Typography>
-            <Typography variant="body1">
-              {status?.params?.model ?? '—'} • {status?.params?.temperature ?? '—'} •{' '}
-              {status?.params?.max_tokens ?? '—'}
-            </Typography>
-          </Grid>
+      {/* Toolbar */}
+      <ResultsToolbar
+        query={query}
+        onQuery={setQuery}
+        dense={dense}
+        onDense={setDense}
+        onExpandAll={() => setExpandSignal({ action: 'expand', seq: Date.now() })}
+        onCollapseAll={() => setExpandSignal({ action: 'collapse', seq: Date.now() })}
+      />
 
-          <Grid size={{ xs: 12, sm: 6 }}>
-            <Typography variant="body2" color="text.secondary">
-              Erstellt am
-            </Typography>
-            <Typography variant="body1">
-              {status?.created_at ? new Date(status.created_at).toLocaleString() : '—'}
-            </Typography>
-          </Grid>
-
-          <Grid size={{ xs: 12, sm: 6 }}>
-            <Typography variant="body2" color="text.secondary">
-              Status
-            </Typography>
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <Chip
-                label={status?.status ?? '—'}
-                color={
-                  status?.status === 'Done'
-                    ? 'success'
-                    : status?.status === 'Running'
-                    ? 'info'
-                    : 'default'
-                }
-                size="small"
-              />
-              <Typography variant="body2">
-                {status?.completed ?? 0} / {status?.total ?? 0}
-              </Typography>
-            </Stack>
-            {status && status.status !== 'Done' && (
-              <Box sx={{ mt: 1 }}>
-                <LinearProgress variant="determinate" value={progress} />
-              </Box>
-            )}
-          </Grid>
-
-          {/* KPIs: PQS Ø (roh) + Subscore Ø */}
-          <Grid size={{ xs: 12, sm: 6 }}>
-            <Typography variant="body2" color="text.secondary">
-              PQS Ø (Prompting Quality Score, roh)
-            </Typography>
-            <Typography variant="h6">{results.length ? fmt0(avgPQS) : '—'}</Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              Subscore Ø
-            </Typography>
-            <Typography variant="h6">{results.length ? fmt2(avgSub) : '—'}</Typography>
-          </Grid>
-        </Grid>
+      {/* Tabelle */}
+      <Paper sx={{ p: 0 }}>
+        <ResultsTable
+          results={filtered}
+          dense={dense}
+          onEdit={setEditing}
+          expandSignal={expandSignal}
+        />
       </Paper>
 
-      <Paper sx={{ p: 2 }}>
-        <Typography variant="h6" gutterBottom>
-          Ergebnisse ({results.length})
-        </Typography>
-        <Divider sx={{ mb: 2 }} />
-
-        <TableContainer>
-          <Table size="small" aria-label="results table">
-            <TableHead>
-              <TableRow>
-                <TableCell sx={{ width: 40 }} />
-                <TableCell sx={{ minWidth: 360 }}>Prompt</TableCell>
-                <TableCell sx={{ minWidth: 420 }}>AI-Antwort</TableCell>
-                <TableCell align="center">Rel.</TableCell>
-                <TableCell align="center">Fact</TableCell>
-                <TableCell align="center">Comp.</TableCell>
-                <TableCell align="center">Tone</TableCell>
-                <TableCell align="center">Compr.</TableCell>
-                <TableCell align="center">PQS</TableCell>
-                <TableCell align="center">Ø</TableCell>
-                <TableCell align="right">Aktion</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {results.map((r) => (
-                <ResultRow key={r.id} r={r} onEdit={setEditing} />
-              ))}
-              {(!results || results.length === 0) && !loading && (
-                <TableRow>
-                  <TableCell colSpan={11} align="center">
-                    <Typography variant="body2" color="text.secondary">
-                      Noch keine Ergebnisse vorhanden.
-                    </Typography>
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </Paper>
-
+      {/* Edit Dialog */}
       {editing && (
         <ResultEditDialog
           key={editing.id}
           open={!!editing}
           initial={editing}
-          onClose={handleCloseEdit}
+          onClose={() => setEditing(null)}
           onSave={handleSaveEdit}
           saving={saving}
         />
       )}
+
+      {/* Rename Dialog */}
+      <RenameRunDialog
+        open={renameOpen}
+        initialName={status?.name || ''}
+        onCancel={() => setRenameOpen(false)}
+        onSave={handleRename}
+        saving={renaming}
+      />
     </Container>
   )
 }

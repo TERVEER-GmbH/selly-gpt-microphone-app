@@ -1,10 +1,16 @@
 # backend/routes/admin_runs.py
 
-import logging, io, csv, asyncio
+import logging, io, csv, asyncio, re
 from quart import Blueprint, request, jsonify, current_app, Response
 from backend.security.role_decorator import require_role
 from backend.models.testrun import TestParams, TestResult
 from backend.db.init_clients import cosmos_admin_db_ready
+
+def _safe_slug(s: str, max_len: int = 60) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"[^A-Za-z0-9\-_\.]+", "", s)
+    return s[:max_len] or "run"
 
 logger = logging.getLogger("logger")
 runs_bp = Blueprint("admin_runs", __name__, url_prefix="/admin/runs")
@@ -58,14 +64,16 @@ async def list_runs():
 async def start_run():
     """
     POST /admin/runs
-    Body: { prompt_ids: [...], params: {...} }
+    Body: { prompt_ids: [...], params: {...}, name?: string }
     -> { run_id }
     """
     await cosmos_admin_db_ready.wait()
     data = await request.get_json()
     prompt_ids = data.get("prompt_ids", [])
     params = TestParams(**data.get("params", {}))
-    run_id = await current_app.cosmos_admin_client.start_run(prompt_ids, params)
+    name = data.get("name")
+
+    run_id = await current_app.cosmos_admin_client.start_run(prompt_ids, params, name=name)
     return jsonify({"run_id": run_id}), 201
 
 @runs_bp.route("/<run_id>/status", methods=["GET"])
@@ -74,7 +82,7 @@ async def get_status(run_id):
     """
     GET /admin/runs/<run_id>/status?includeMetrics=1
     {
-        run_id, prompt_ids, params, status, total, completed, created_at
+        run_id, name, prompt_ids, params, status, total, completed, created_at
         + metrics (optional via ?includeMetrics=1)
     }
     """
@@ -99,6 +107,7 @@ async def get_status(run_id):
 
         payload = {
             "run_id":     run.id,
+            "name":       run.name,
             "prompt_ids": run.prompt_ids,
             "params":     run.params.to_dict(),
             "status":     run.status,
@@ -114,6 +123,23 @@ async def get_status(run_id):
     except Exception:
         logger.exception("Error fetching run status %s", run_id)
         return jsonify({"error": "Could not fetch status"}), 500
+
+@runs_bp.route("/<run_id>/name", methods=["PATCH"])
+@require_role("Admin")
+async def rename(run_id):
+    await cosmos_admin_db_ready.wait()
+    try:
+        body = await request.get_json() or {}
+        name = (body.get("name") or "").strip()
+        if not name:
+            return jsonify({"error":"name required"}), 400
+        await current_app.cosmos_admin_client.rename_run(run_id, name)
+        return jsonify({"ok": True}), 200
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
+    except Exception:
+        logger.exception("rename: Fehler bei %s", run_id)
+        return jsonify({"error":"rename failed"}), 500
 
 @runs_bp.route("/<run_id>/summary", methods=["GET"])
 @require_role("Admin")
@@ -290,10 +316,18 @@ async def export_run(run_id):
             ])
 
         csv_bytes = output.getvalue().encode("utf-8-sig")
-        filename = f"run_{run_id}.csv"
+        name = ""
+        try:
+            run_doc = await current_app.cosmos_admin_client.run_container.read_item(item=run_id, partition_key=run_id)
+            name = run_doc.get("name") or ""
+        except Exception:
+            pass
+        slug = _safe_slug(name) if name else f"run_{run_id[:8]}"
+
+        filename = f"{slug}_{run_id}.csv" if fmt == "csv" else f"{slug}_{run_id}.json"
         headers = {
             "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Type": "text/csv; charset=utf-8" if fmt == "csv" else "application/json; charset=utf-8",
         }
         return Response(csv_bytes, headers=headers)
     except Exception:

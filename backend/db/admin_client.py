@@ -1,7 +1,8 @@
-import csv, json
+import csv, json, re
 import uuid
 import logging
 import asyncio
+import os
 from dataclasses import asdict
 from datetime import datetime, timezone
 from .base_cosmos import BaseCosmosClient
@@ -14,6 +15,18 @@ from backend.models.testrun import TestRun, TestResult, TestParams
 
 logger = logging.getLogger('logger')
 
+def _safe_slug(s: str, max_len: int = 60) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"[^A-Za-z0-9\-_\.]+", "", s)
+    return s[:max_len] or "run"
+
+def _default_run_name(prompt_count: int, params: TestParams, run_id: str) -> str:
+    ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d • %H:%M")
+    short = (run_id.split("-")[0] if run_id else "")[:4]
+    model = getattr(params, "model", "model")
+    return f"{ts} • {model} • {prompt_count} Prompts • {short}"
+
 class CosmosAdminClient(BaseCosmosClient):
     def __init__(self, endpoint, credential, database_name,
                  prompt_container="prompts", run_container="testruns", result_container="testresults"):
@@ -21,6 +34,13 @@ class CosmosAdminClient(BaseCosmosClient):
         self.prompt_container = self.database.get_container_client(prompt_container)
         self.run_container    = self.database.get_container_client(run_container)
         self.result_container = self.database.get_container_client(result_container)
+
+    def _worker_id(self) -> str:
+        """
+        Unique worker id (used for claiming runs)
+        """
+        inst = os.getenv("WEBSITE_INSTANCE_ID") or os.getenv("HOSTNAME") or "local"
+        return f"{inst}:{os.getpid()}"
 
     # ------------------------------------------------------------
     # Prompts-CRUD (unchanged)
@@ -123,10 +143,11 @@ class CosmosAdminClient(BaseCosmosClient):
     # TestRuns & TestResults
     # ------------------------------------------------------------
 
-    async def start_run(self, prompt_ids: List[str], params: TestParams) -> str:
+    async def start_run(self, prompt_ids: List[str], params: TestParams, name: Optional[str] = None) -> str:
         run_id = str(uuid.uuid4())
         run = TestRun(
             id=run_id,
+            name=(name or _default_run_name(len(prompt_ids), params, run_id)),
             prompt_ids=prompt_ids,
             params=params,
             status="Pending",
@@ -153,13 +174,110 @@ class CosmosAdminClient(BaseCosmosClient):
             logger.error("get_run: Fehler beim Lesen von Run %s: %s", run_id, e, exc_info=True)
             raise
 
-        # jetzt die echten Ergebnisse holen
         try:
             run.results = await self.list_results(run_id)
         except Exception:
-            # falls list_results schon Exception wirft, abfangen, aber Metadaten liefern wir trotzdem
             logger.warning("get_run: konnte Ergebnisse für Run %s nicht laden, liefere Metadaten ohne results", run_id)
+
         return run
+
+    # Try to claim a run exclusively (Pending -> Running) using ETag / If-Match
+    async def try_claim_run(self, run_id: str) -> bool:
+        """
+        Versucht, einen TestRun exklusiv für diesen Worker zu "claimen"
+        (Übernahme zur Abarbeitung), um parallele doppelte Verarbeitung
+        in Multi-Worker-Setups zu vermeiden.
+
+        Funktionsweise:
+        - Liest das Run-Dokument per ID/PartitionKey.
+        - Prüft, ob der aktuelle Status `Pending` ist.
+        - Falls ja, setzt `status="Running"` sowie `claimed_by` und `claimed_at`.
+        - Führt das Update per `replace_item()` mit `if_match=etag` aus,
+        sodass genau ein Worker bei identischem ETag erfolgreich ist.
+        Falls ein anderer Worker in der Zwischenzeit geändert hat,
+        schlägt die Operation mit 412 (Precondition Failed) oder 409 (Conflict) fehl.
+
+        Return:
+        - `True`  → dieser Worker hat erfolgreich übernommen.
+        - `False` → ein anderer Worker hat bereits übernommen oder der Run ist nicht pending.
+        """
+
+        try:
+            doc = await self.run_container.read_item(item=run_id, partition_key=run_id)
+        except Exception as e:
+            logger.error("try_claim_run: read %s failed: %s", run_id, e, exc_info=True)
+            raise
+
+        if doc.get("status") != "Pending":
+            logger.info("try_claim_run: run %s not pending (status=%s)", run_id, doc.get("status"))
+            return False
+
+        etag = doc.get("_etag")
+        if not etag:
+            logger.warning("try_claim_run: run %s has no _etag, skip claiming", run_id)
+            return False
+
+        doc["status"] = "Running"
+        doc["claimed_by"] = self._worker_id()
+        doc["claimed_at"] = datetime.now(timezone.utc).isoformat()
+
+        try:
+            # Only one worker will succeed due to ETag precondition
+            await self.run_container.replace_item(
+                item=run_id,
+                body=doc,
+                if_match=etag,
+            )
+            logger.info("try_claim_run: claimed %s by %s", run_id, doc["claimed_by"])
+            return True
+
+        except CosmosHttpResponseError as e:
+            status = getattr(e, "status_code", None) or getattr(e, "status", None)
+            # 412 = Precondition Failed (ETag mismatch), 409 = Conflict
+            if status in (412, 409):
+                logger.info("try_claim_run: someone else claimed %s first (HTTP %s)", run_id, status)
+                return False
+            logger.error("try_claim_run: unexpected error for %s: %s", run_id, e, exc_info=True)
+            raise
+
+    # Check if a result for (run_id, prompt_id) already exists (duplicate guard)
+    async def _result_exists(self, run_id: str, prompt_id: str) -> bool:
+        """
+        Prüft effizient, ob bereits ein TestResult für das Paar (run_id, prompt_id)
+        in der `testresults`-Partition existiert.
+
+        Implementierung:
+        - Ausführung einer minimalen SELECT-Query in der Partition `run_id` mit
+            `OFFSET 0 LIMIT 1`, um nur ein Existenzsignal zu erhalten.
+        - Vermeidet das Laden kompletter Dokumente und ist damit ressourcenschonend.
+
+        Hinweis:
+        - Für maximale Sicherheit gegen Duplikate kann zusätzlich auf Container-
+            Ebene ein UNIQUE KEY (z. B. auf `["/run_id", "/prompt_id"]`) definiert
+            werden. Diese Methode dient als Guard auf Anwendungsebene.
+
+        Args:
+            run_id: ID des Runs (Partition-Key).
+            prompt_id: ID des Prompts innerhalb des Runs.
+
+        Returns:
+            bool: `True`, wenn mindestens ein entsprechendes Ergebnis existiert,
+                sonst `False`.
+        """
+        q = """
+        SELECT VALUE 1
+        FROM c
+        WHERE c.run_id = @rid AND c.prompt_id = @pid
+        OFFSET 0 LIMIT 1
+        """
+        it = self.result_container.query_items(
+            query=q,
+            parameters=[{"name": "@rid", "value": run_id}, {"name": "@pid", "value": prompt_id}],
+            partition_key=run_id,
+        )
+        async for _ in it:
+            return True
+        return False
 
     async def add_result(self, run_id: str, result: TestResult) -> None:
         """
@@ -167,6 +285,16 @@ class CosmosAdminClient(BaseCosmosClient):
         zählt dann die bisherigen Ergebnisse für diesen Run und patched abschließend
         den Status des TestRun im 'testruns'-Container.
         """
+        # Duplicate guard: prevent storing the same (run_id, prompt_id) twice (multi-worker safety)
+        try:
+            if await self._result_exists(run_id, result.prompt_id):
+                logger.warning("add_result: duplicate suppressed (run=%s, prompt=%s)", run_id, result.prompt_id)
+                return
+        except Exception as e:
+            logger.error("add_result: _result_exists failed for run=%s prompt=%s: %s",
+                         run_id, result.prompt_id, e, exc_info=True)
+            # Fail-open: continue and attempt to write the result
+
         # 1) TestResult speichern
         try:
             doc = result.to_dict()
@@ -221,7 +349,6 @@ class CosmosAdminClient(BaseCosmosClient):
         Liefert Metadaten aller TestRuns (ohne embedded results).
         Optional: Pagination via OFFSET/LIMIT, sortiert nach created_at DESC.
         """
-        # Basisquery
         query = "SELECT * FROM c"
         parameters: List[Dict[str, Any]] = []
         if status:
@@ -230,46 +357,101 @@ class CosmosAdminClient(BaseCosmosClient):
 
         query += " ORDER BY c.created_at DESC"
 
-        # OFFSET/LIMIT nur anhängen, wenn gewünscht
         if offset is not None or limit is not None:
             off = int(offset or 0)
-            lim = int(limit or 1000)  # sane default
+            lim = int(limit or 1000)
             query += f" OFFSET {off} LIMIT {lim}"
 
         runs: List[TestRun] = []
         try:
             iterator = self.run_container.query_items(query=query, parameters=parameters)
             async for doc in iterator:
-                runs.append(TestRun.from_dict(doc))
-            logger.debug("list_runs: Retrieved %d runs (status=%s, offset=%s, limit=%s)",
-                        len(runs), status, offset, limit)
+                r = TestRun.from_dict(doc)
+                runs.append(r)
+            logger.debug("list_runs: Retrieved %d runs (status=%s, offset=%s, limit=%s)", len(runs), status, offset, limit)
             return runs
         except CosmosHttpResponseError as e:
             logger.error("list_runs: Cosmos query failed: %s", e, exc_info=True)
             raise
 
-    async def update_run(self, run: TestRun) -> None:
+    async def rename_run(self, run_id: str, new_name: str) -> None:
         """
-        Vollständiges Upsert eines TestRun (inkl. embedded results).
+        Setzt den Anzeigenamen eines Runs. Nutzt ETag, um Lost-Updates zu vermeiden.
+        Überschreibt keine anderen Felder.
         """
-        # serialisieren
+        new_name = (new_name or "").strip()
+        if not new_name:
+            raise ValueError("name required")
+
         try:
-            item = asdict(run)
-            item["params"]  = asdict(run.params)
-            item["results"] = [r.to_dict() for r in run.results]
+            doc = await self.run_container.read_item(item=run_id, partition_key=run_id)
         except Exception as e:
-            logger.exception("update_run: Serialisierung fehlgeschlagen für run %s", run.id)
+            logger.error("rename_run: read %s failed: %s", run_id, e, exc_info=True)
             raise
 
-        # upsert
+        etag = doc.get("_etag")
+        if not etag:
+            logger.warning("rename_run: run %s has no _etag", run_id)
+
+        # nur das Namensfeld ändern; alle anderen Felder bleiben unverändert
+        doc["name"] = new_name
+
         try:
-            await self.run_container.upsert_item(item)
-            logger.debug("update_run: Upserted run %s (status=%s, %d results)", run.id, run.status, len(run.results))
+            await self.run_container.replace_item(
+                item=run_id,
+                body=doc,
+                if_match=etag,   # verhindert Überschreiben fremder Änderungen
+            )
+            logger.info("rename_run: %s -> %r", run_id, new_name)
         except CosmosHttpResponseError as e:
-            logger.error("update_run: CosmosDB-Fehler beim Upsert von run %s: %s", run.id, e, exc_info=True)
+            status = getattr(e, "status_code", None) or getattr(e, "status", None)
+            if status in (409, 412):
+                # 412 Precondition Failed (ETag mismatch): jemand war schneller
+                logger.info("rename_run: ETag conflict for %s (HTTP %s)", run_id, status)
+            else:
+                logger.error("rename_run: unexpected error for %s: %s", run_id, e, exc_info=True)
             raise
-        except Exception:
-            logger.exception("update_run: Unerwarteter Fehler beim Upsert von run %s", run.id)
+
+    async def update_run(self, run: TestRun) -> None:
+        """
+        Aktualisiert ein Run-Dokument per Read-Modify-Write mit ETag.
+        - Überschreibt NICHT versehentlich Felder wie 'name'.
+        - Schreibt nur Felder, die im übergebenen Objekt gesetzt sind.
+        """
+        try:
+            current = await self.run_container.read_item(item=run.id, partition_key=run.id)
+            etag = current.get("_etag")
+        except Exception as e:
+            logger.exception("update_run: read failed for %s", run.id)
+            raise
+
+        # selektives Mergen – NUR die Felder, die wir wirklich aktualisieren wollen
+        # (Passe diese Liste an deinen tatsächlichen Use-Case an)
+        to_merge: dict = {}
+        if run.status is not None:
+            to_merge["status"] = run.status
+        if run.params is not None:
+            to_merge["params"] = asdict(run.params)
+        if run.prompt_ids:
+            to_merge["prompt_ids"] = list(run.prompt_ids)
+        # 'name' nur dann setzen, wenn explizit im Objekt vorhanden (nicht None)
+        if getattr(run, "name", None) is not None:
+            to_merge["name"] = run.name
+
+        # NIE pauschal 'results' in den Run schreiben (liegen im separaten Container)
+        # => falls du früher embedded results hattest, bitte nicht mehr mergen.
+
+        merged = {**current, **to_merge}
+
+        try:
+            await self.run_container.replace_item(
+                item=run.id,
+                body=merged,
+                if_match=etag,
+            )
+            logger.debug("update_run: merged run %s (fields=%s)", run.id, ",".join(to_merge.keys()))
+        except CosmosHttpResponseError as e:
+            logger.error("update_run: replace failed for %s: %s", run.id, e, exc_info=True)
             raise
 
     async def list_results(self,
@@ -501,12 +683,11 @@ class CosmosAdminClient(BaseCosmosClient):
         from backend.services.ai_client import call_ai_model
         from backend.services.comparator import compare_answers
 
-        # Running
-        await self.run_container.patch_item(
-            item=run_id,
-            partition_key=run_id,
-            patch_operations=[{"op": "replace", "path": "/status", "value": "Running"}]
-        )
+        # Claim the run exclusively using ETag (only one worker proceeds)
+        claimed = await self.try_claim_run(run_id)
+        if not claimed:
+            logger.info("run_tests: skip, run %s not claimed by this worker", run_id)
+            return
 
         for pid in prompt_ids:
             try:
@@ -564,8 +745,12 @@ class CosmosAdminClient(BaseCosmosClient):
             except Exception:
                 logger.exception("run_tests: Unerwarteter Fehler bei Prompt %s", pid)
 
-        # Done
+        # Done (+ finished_at)
         await self.run_container.patch_item(
-            item=run_id, partition_key=run_id,
-            patch_operations=[{"op": "replace", "path": "/status", "value": "Done"}]
+            item=run_id,
+            partition_key=run_id,
+            patch_operations=[
+                {"op": "replace", "path": "/status", "value": "Done"},
+                {"op": "add", "path": "/finished_at", "value": datetime.now(timezone.utc).isoformat()},
+            ],
         )

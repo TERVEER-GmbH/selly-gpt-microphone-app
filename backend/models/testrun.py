@@ -126,6 +126,7 @@ class TestRun:
     params: TestParams
     status: Literal["Pending", "Running", "Done"]
     created_at: str
+    name: str
     results: List[TestResult] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -135,6 +136,7 @@ class TestRun:
             "params": self.params.to_dict(),
             "status": self.status,
             "created_at": self.created_at,
+            "name": self.name,
             "results": [r.to_dict() for r in self.results],
         }
 
@@ -149,6 +151,7 @@ class TestRun:
                 params=params,
                 status=data["status"],
                 created_at=data["created_at"],
+                name=data["name"],
                 results=results,
             )
         except Exception as e:
