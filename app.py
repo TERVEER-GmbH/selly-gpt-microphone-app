@@ -87,9 +87,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY")
 SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
 #for storage
-AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-AZURE_RESULTS_CONTAINER = os.getenv("AZURE_RESULTS_CONTAINER")
-AZURE_RESULTS_BLOB_NAME = os.getenv("AZURE_RESULTS_BLOB_NAME")
+# AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+# AZURE_RESULTS_CONTAINER = os.getenv("AZURE_RESULTS_CONTAINER")
+# AZURE_RESULTS_BLOB_NAME = os.getenv("AZURE_RESULTS_BLOB_NAME")
 
 
 # bp = Blueprint("routes", __name__, static_folder="static", template_folder="static")
@@ -151,22 +151,24 @@ async def index():
         favicon=app_settings.ui.favicon
     )
 
-
-
-
 # the SDK will call our methods whenever it needs more audio samples
 class MemoryPCMCallback(speechsdk.audio.PullAudioInputStreamCallback):
     def __init__(self, pcm_bytes: bytes):
         super().__init__()
-        self._buf = io.BytesIO(pcm_bytes) #we take the full PCM data (a bytes object) and wrap it in a BytesIO, which behaves like a file in memory
+        self._buf = io.BytesIO(pcm_bytes)
+        self._lock = threading.Lock()
+
     def read(self, buffer: memoryview) -> int:
-        chunk = self._buf.read(buffer.nbytes)
-        if not chunk:
-            return 0    #end of chunk
-        buffer[:len(chunk)] = chunk #fill SDK's buffer
-        return len(chunk)
+        with self._lock:
+            chunk = self._buf.read(buffer.nbytes)
+            if not chunk:
+                return 0
+            buffer[:len(chunk)] = chunk
+            return len(chunk)
+
     def close(self) -> None:
-        self._buf.close() #when the SDK is done with the stream, it calls close()
+        with self._lock:
+            self._buf.close()
         super().close()
 
 #MicButton uses MediaRecorder to grab raw microphone samples, it packages them into a small WebM file and hands us a Blob
@@ -176,89 +178,96 @@ async def transcribe():
     start_t = time.time()
     logger.info("Transcription request received")
 
-    webm = await request.data #quart endpoint reads the blob(webm) and now we have the compressed audio bytes in memory
+    # --- Input Validation ---
+    webm = await request.data
+    if not webm or len(webm) < 1000:  # primitive check
+        return jsonify({"text": "", "error": "empty or invalid audio"}), 400
 
-    #FFmpeg: WebM → raw PCM (16 kHz, 16 bit, mono) in memory
+    # --- Convert WebM → PCM ---
     try:
         proc = (
             ffmpeg.input("pipe:0")
-                  .output("pipe:1",
-                          format="s16le",
-                          acodec="pcm_s16le",
-                          ac=1, ar="16000")
-                  .run_async(pipe_stdin=True, pipe_stdout=True,
-                             pipe_stderr=True)
+                  .output("pipe:1", format="s16le", acodec="pcm_s16le", ac=1, ar="16000")
+                  .run_async(pipe_stdin=True, pipe_stdout=True, pipe_stderr=True)
         )
-        pcm_bytes, err = proc.communicate(input=webm)
-        if proc.returncode:
-            raise RuntimeError(err.decode().strip())
+        loop = asyncio.get_running_loop()
+        pcm_bytes, _ = await loop.run_in_executor(None, lambda: proc.communicate(input=webm, timeout=15))
+        if proc.returncode != 0:
+            raise RuntimeError("FFmpeg returned non-zero exit code")
         logger.info("FFmpeg → PCM successful")
     except Exception as e:
-        logger.error("FFmpeg conversion failed: %s", e)
+        logger.exception(f"FFmpeg conversion failed. Error: {e}")
         return jsonify({"text": "", "error": "ffmpeg conversion failed"}), 500
 
-    #Configure Speech SDK with in-memory pull stream
-    speech_config = speechsdk.SpeechConfig(
-        subscription=SPEECH_KEY, region=SPEECH_REGION
-    )
-    langs = ["de-DE", "en-US", "tr-TR", "ru-RU", "pl-PL", "it-IT", "fr-FR", "uk-UA", "cs-CZ" ,"es-ES"]
-    auto_lang = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(langs)
-    #enable Continuous LID mode
-    speech_config.set_property(
-        property_id=speechsdk.PropertyId.SpeechServiceConnection_LanguageIdMode, value='Continuous' #without it we won't be able to add 10 langs
+    # --- Setup Speech SDK ---
+    try:
+        speech_config = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
+        langs = ["de-DE", "en-US", "tr-TR", "ru-RU", "pl-PL", "it-IT", "fr-FR", "uk-UA", "cs-CZ", "es-ES"]
+        auto_lang = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(langs)
+        speech_config.set_property(
+            property_id=speechsdk.PropertyId.SpeechServiceConnection_LanguageIdMode,
+            value='Continuous'
         )
 
-    fmt = speechsdk.audio.AudioStreamFormat(
-        samples_per_second=16000,
-        bits_per_sample=16,
-        channels=1
+        fmt = speechsdk.audio.AudioStreamFormat(samples_per_second=16000, bits_per_sample=16, channels=1)
+        pull_cb = MemoryPCMCallback(pcm_bytes)
+        pull_stream = speechsdk.audio.PullAudioInputStream(pull_cb, fmt)
+        audio_cfg = speechsdk.audio.AudioConfig(stream=pull_stream)
+
+        recognizer = speechsdk.SpeechRecognizer(
+            speech_config=speech_config,
+            auto_detect_source_language_config=auto_lang,
+            audio_config=audio_cfg
         )
+    except Exception as e:
+        logger.exception(f"Speech SDK init failed. Error: {e}")
+        return jsonify({"text": "", "error": "speech sdk init failed"}), 500
 
-    #getting the converted audio...
-    pull_cb    = MemoryPCMCallback(pcm_bytes) #instance of callback class
-    pull_stream= speechsdk.audio.PullAudioInputStream(pull_cb, fmt) #it will call pull_cb.read() to fetch exactly the right number of bytes whenever the recognizer asks for audio
-    audio_cfg  = speechsdk.audio.AudioConfig(stream=pull_stream) # we package the pull-stream into an AudioConfig, which is how the Speech SDK learns where to get its audio from
-
-    recognizer = speechsdk.SpeechRecognizer(
-        speech_config=speech_config,
-        auto_detect_source_language_config=auto_lang,
-        audio_config=audio_cfg
-    )
-
-    #Collect all segments (even after silence)
+    # --- Recognition Logic ---
     all_text = []
-    done = threading.Event() #The done object is a simple way to pause the code until SDK is finished with audio stream. done intially holds the flag set to False
+    text_lock = threading.Lock()
+    done = threading.Event()
 
     def on_rec(evt):
-        if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech: #if a speech is recognized
-            all_text.append(evt.result.text)
+        if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
+            with text_lock:
+                all_text.append(evt.result.text)
 
     def on_stop(evt):
-        done.set() #now the flag is set , continue
+        done.set()
 
-    #first recognized.connect starts , and then continuous_recognition starts and the code pauses by done.wait() till the Flag turns to True,
-    #when the session_stopped (after clicking complete button) or canceled (after complete cross button) the Flag turns True and then we call stop_continous_recognititon()
     recognizer.recognized.connect(on_rec)
     recognizer.session_stopped.connect(on_stop)
     recognizer.canceled.connect(on_stop)
 
-    #Run continuous → wait for end-of-stream → stop
-    recognizer.start_continuous_recognition()
-    done.wait() #pause here until the flag is True
-    recognizer.stop_continuous_recognition()
+    try:
+        recognizer.start_continuous_recognition()
+        # Wait max 30 seconds
+        loop = asyncio.get_running_loop()
+        await asyncio.wait_for(loop.run_in_executor(None, done.wait), timeout=30)
+        recognizer.stop_continuous_recognition()
+    except asyncio.TimeoutError:
+        recognizer.stop_continuous_recognition()
+        logger.warning("Recognition timeout after 30s")
+    except Exception as e:
+        recognizer.stop_continuous_recognition()
+        logger.exceptionf("Speech recognition failed. Error: {e}")
+        return jsonify({"text": "", "error": "speech recognition failed"}), 500
 
+    # --- Return Result ---
     transcript = " ".join(all_text).strip()
-    logger.info(f"Transcription done in {time.time()-start_t:.2f}s: {transcript!r}")
+    duration = time.time() - start_t
+    logger.info(f"Transcription done in {duration:.2f}s: {transcript!r}")
     return jsonify({"text": transcript})
 
-# @bp.route("/favicon.ico")
-# async def favicon():
-#     return await bp.send_static_file("favicon.ico")
+@bp.route("/favicon.ico")
+async def favicon():
+    return await bp.send_static_file("favicon.ico")
 
 
-# @bp.route("/assets/<path:path>")
-# async def assets(path):
-#     return await send_from_directory("static/assets", path)
+@bp.route("/assets/<path:path>")
+async def assets(path):
+    return await send_from_directory("static/assets", path)
 
 # @bp.route("/evaluate", methods=["POST"])
 # async def evaluate():
