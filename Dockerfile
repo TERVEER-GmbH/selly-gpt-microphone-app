@@ -1,43 +1,35 @@
-# ---------- Frontend Build ----------
 FROM node:20-alpine AS frontend
-WORKDIR /app
+RUN mkdir -p /home/node/app/node_modules && chown -R node:node /home/node/app
+
+WORKDIR /home/node/app
 COPY ./frontend/package*.json ./
+USER node
 RUN npm ci
-COPY ./frontend/ ./frontend
-# Passe das an, falls dein Build anders heißt (z.B. "build")
-WORKDIR /app/frontend
+COPY --chown=node:node ./frontend/ ./frontend
+COPY --chown=node:node ./static/ ./static
+WORKDIR /home/node/app/frontend
 RUN NODE_OPTIONS=--max_old_space_size=8192 npm run build
 
-# ---------- Python Runtime ----------
-FROM python:3.11-slim AS runtime
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
-
-# Systempakete (build + runtime)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y \
     ffmpeg \
     build-essential \
     libffi-dev \
     libpq-dev \
     curl \
-  && rm -rf /var/lib/apt/lists/*
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Python-Deps
+# Install Python dependencies
+COPY requirements.txt /usr/src/app/
+RUN pip install --no-cache-dir -r /usr/src/app/requirements.txt \
+    && rm -rf /root/.cache
+
+# Copy source code
+COPY . /usr/src/app/
+COPY --from=frontend /home/node/app/static /usr/src/app/static/
+
 WORKDIR /usr/src/app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+EXPOSE 80
 
-# Code + Static
-COPY . .
-# WICHTIG: kopiere das gebaute Frontend in dein "static" Verzeichnis,
-# so wie es deine Quart-App erwartet (du nutzt static_url_path="").
-# Häufiger Build-Pfad ist "dist" (Vite) oder "build" (CRA).
-COPY --from=frontend /app/frontend/dist/ ./static/
-
-# Healthcheck (optional, hilft lokal & bei Orchestrierung)
-EXPOSE 8000
-#HEALTHCHECK --interval=30s --timeout=3s --start-period=10s CMD curl -fsS http://127.0.0.1:8000/healthz || exit 1
-
-# Quart braucht ASGI-Worker:
-CMD ["gunicorn","-k","uvicorn.workers.UvicornWorker","server:app","--bind","0.0.0.0:8000","--access-logfile","-","--error-logfile","-"]
+CMD ["gunicorn", "-b", "0.0.0.0:80", "app:app"]
