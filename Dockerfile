@@ -10,25 +10,22 @@ COPY --chown=node:node ./static/ ./static
 WORKDIR /home/node/app/frontend
 RUN NODE_OPTIONS=--max_old_space_size=8192 npm run build
 
-FROM python:3.11-slim
-RUN apt-get update && apt-get install -y \
+FROM python:3.11-alpine
+RUN apk add --no-cache --virtual .build-deps \
     ffmpeg \
-    build-essential \
+    build-base \
     libffi-dev \
-    libpq-dev \
+    openssl-dev \
     curl \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && apk add --no-cache \
+    libpq
 
-# Install Python dependencies
 COPY requirements.txt /usr/src/app/
 RUN pip install --no-cache-dir -r /usr/src/app/requirements.txt \
     && rm -rf /root/.cache
 
-# Copy source code
 COPY . /usr/src/app/
-COPY --from=frontend /home/node/app/static /usr/src/app/static/
-
+COPY --from=frontend /home/node/app/static  /usr/src/app/static/
 WORKDIR /usr/src/app
 EXPOSE 80
 
