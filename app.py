@@ -1296,12 +1296,22 @@ async def whoami():
     user = get_authenticated_user_details(request.headers)
     roles = user.get("roles", []) if user else []
 
+    admin_email_list = ["cornelius.heidrich.extern@syna.de",
+                        "sebastian.hahn.extern@syna.de",
+                        "torsten.terveer.extern@syna.de",
+                        "christin.schulz.extern@syna.de",
+                        "charlotte.goiczyk.extern@syna.de",
+                        "sebastian.ostermann@syna.de",
+                        "maximilian.hofmann@syna.de"
+                        "sven.sorosz@suewag.de",
+                        "andranik.stepanyan@suewag.de"]
+
     return jsonify({
         "authenticated": user is not None,
         "user_name": user.get("display_name") or user.get("user_name"),
         "email": user.get("email"),
         "roles": roles,
-        "is_admin": "Admin" in roles,
+        "is_admin": "Admin" in roles or user.get("email") in admin_email_list,
     })
 
 @bp.route('/.auth/me', methods=['GET'])
