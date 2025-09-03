@@ -49,6 +49,9 @@ from backend.db.init_clients import (
 
 )
 from backend.tasks.batch_runner import background_runner
+
+from backend.retriever.retriever import get_context_for_query_sync
+
 import tempfile
 import azure.cognitiveservices.speech as speechsdk
 import ffmpeg
@@ -368,6 +371,7 @@ frontend_settings = {
     },
     "sanitize_answer": app_settings.base_settings.sanitize_answer,
     "oyd_enabled": app_settings.base_settings.datasource_type,
+    "own_retrieval_enabled": app_settings.base_settings.openai_own_retrieval_enabled,
 }
 
 
@@ -472,47 +476,54 @@ async def openai_remote_azure_function_call(function_name, function_args):
 
 def prepare_model_args(request_body, request_headers):
     request_messages = request_body.get("messages", [])
-    messages = []
-    if not app_settings.datasource:
-        messages = [
-            {
-                "role": "system",
-                "content": app_settings.azure_openai.system_message
-            }
-        ]
 
+    # Immer einen Basis-Systemprompt setzen:
+    # 1) falls vorhanden: Search.role_information (ENV: AZURE_OPENAI_SYSTEM_MESSAGE)
+    # 2) sonst: AzureOpenAI.system_message
+    base_system_prompt = getattr(app_settings.search, "role_information", None) \
+                         or app_settings.azure_openai.system_message
+
+    messages = [{
+        "role": "system",
+        "content": base_system_prompt
+    }]
+
+    # Eingehende Messages übernehmen
     for message in request_messages:
-        if message:
-            match message["role"]:
-                case "user":
-                    messages.append(
-                        {
-                            "role": message["role"],
-                            "content": message["content"]
-                        }
-                    )
-                case "assistant" | "function" | "tool":
-                    messages_helper = {}
-                    messages_helper["role"] = message["role"]
-                    if "name" in message:
-                        messages_helper["name"] = message["name"]
-                    if "function_call" in message:
-                        messages_helper["function_call"] = message["function_call"]
-                    messages_helper["content"] = message["content"]
-                    if "context" in message:
-                        context_obj = json.loads(message["context"])
-                        messages_helper["context"] = context_obj
+        if not message:
+            continue
 
-                    messages.append(messages_helper)
+        role = message.get("role")
+        if role == "user":
+            messages.append({"role": "user", "content": message.get("content", "")})
+        else:
+            helper = {
+                "role": role,
+                "content": message.get("content")
+            }
+            if "name" in message:
+                helper["name"] = message["name"]
+            if "function_call" in message:
+                helper["function_call"] = message["function_call"]
+            if "context" in message:
+                try:
+                    helper["context"] = json.loads(message["context"])
+                except Exception:
+                    logger.warning("prepare_model_args: invalid JSON in message.context")
+            messages.append(helper)
 
-
+    # Microsoft Defender: User Security Context
     user_security_context = None
-    if (MS_DEFENDER_ENABLED):
-        authenticated_user_details = get_authenticated_user_details(request_headers)
-        application_name = app_settings.ui.title
-        user_security_context = get_msdefender_user_json(authenticated_user_details, request_headers, application_name )  # security component introduced here https://learn.microsoft.com/en-us/azure/defender-for-cloud/gain-end-user-context-ai
+    if os.getenv("MS_DEFENDER_ENABLED", "true").lower() == "true":
+        try:
+            authenticated_user = get_authenticated_user_details(request_headers)
+            user_security_context = get_msdefender_user_json(
+                authenticated_user, request_headers, app_settings.ui.title
+            )
+        except Exception:
+            logger.exception("prepare_model_args: building user_security_context failed")
 
-
+    # Basis-Parameter für Chat Completion
     model_args = {
         "messages": messages,
         "temperature": app_settings.azure_openai.temperature,
@@ -523,61 +534,80 @@ def prepare_model_args(request_body, request_headers):
         "model": app_settings.azure_openai.model
     }
 
-    if len(messages) > 0:
-        if messages[-1]["role"] == "user":
-            if app_settings.azure_openai.function_call_azure_functions_enabled and len(azure_openai_tools) > 0:
-                model_args["tools"] = azure_openai_tools
+    # Nur wenn die letzte Message vom User ist, machen Retrieval/Tools Sinn
+    if messages and messages[-1]["role"] == "user":
+        # Tools (remote function calling) aktivieren, falls konfiguriert
+        if app_settings.azure_openai.function_call_azure_functions_enabled and len(azure_openai_tools) > 0:
+            model_args["tools"] = azure_openai_tools
 
-            if app_settings.datasource:
-                model_args["extra_body"] = {
-                    "data_sources": [
-                        app_settings.datasource.construct_payload_configuration(
-                            request=request
-                        )
-                    ]
-                }
+        # Umschalter: eigener Retriever vs. OYD data_sources
+        try:
+            if app_settings.base_settings.openai_own_retrieval_enabled:
+                logger.info("Retrieval-Mode = OWN (OPENAI_OWN_RETRIEVAL_ENABLED=True)")
 
-    model_args_clean = copy.deepcopy(model_args)
-    if model_args_clean.get("extra_body"):
-        secret_params = [
-            "key",
-            "connection_string",
-            "embedding_key",
-            "encoded_api_key",
-            "api_key",
-        ]
-        for secret_param in secret_params:
-            if model_args_clean["extra_body"]["data_sources"][0]["parameters"].get(
-                secret_param
-            ):
-                model_args_clean["extra_body"]["data_sources"][0]["parameters"][
-                    secret_param
-                ] = "*****"
-        authentication = model_args_clean["extra_body"]["data_sources"][0][
-            "parameters"
-        ].get("authentication", {})
-        for field in authentication:
-            if field in secret_params:
-                model_args_clean["extra_body"]["data_sources"][0]["parameters"][
-                    "authentication"
-                ][field] = "*****"
-        embeddingDependency = model_args_clean["extra_body"]["data_sources"][0][
-            "parameters"
-        ].get("embedding_dependency", {})
-        if "authentication" in embeddingDependency:
-            for field in embeddingDependency["authentication"]:
-                if field in secret_params:
-                    model_args_clean["extra_body"]["data_sources"][0]["parameters"][
-                        "embedding_dependency"
-                    ]["authentication"][field] = "*****"
+                user_query = messages[-1]["content"]
+                context = None
+                try:
+                    context = get_context_for_query_sync(user_query)
+                except Exception:
+                    logger.exception("Own retrieval failed; proceeding without extra context")
 
-    if model_args.get("extra_body") is None:
-        model_args["extra_body"] = {}
-    if user_security_context:  # security component introduced here https://learn.microsoft.com/en-us/azure/defender-for-cloud/gain-end-user-context-ai
-                model_args["extra_body"]["user_security_context"]= user_security_context.to_dict()
-    logger.debug(f"REQUEST BODY: {json.dumps(model_args_clean, indent=4)}")
+                if context and context.strip():
+                    # Immer direkt NACH dem Basis-Systemprompt injizieren
+                    insertion_index = 1
+                    messages.insert(insertion_index, {
+                        "role": "system",
+                        "content": f"Kontext:\n{context}"
+                    })
+                    model_args["messages"] = messages
+                    logger.debug("Own retrieval context injected (chars=%d)", len(context))
+                else:
+                    logger.warning("Own retrieval returned no context")
+            else:
+                logger.info("Retrieval-Mode = OYD (data_sources aktiv)")
+                if app_settings.datasource:
+                    model_args["extra_body"] = {
+                        "data_sources": [
+                            app_settings.datasource.construct_payload_configuration(
+                                request=request
+                            )
+                        ]
+                    }
+        except Exception:
+            logger.exception("prepare_model_args: retrieval switching failed")
+
+    # Defender-Kontext unter extra_body anhängen
+    if user_security_context:
+        try:
+            model_args.setdefault("extra_body", {})
+            model_args["extra_body"]["user_security_context"] = user_security_context.to_dict()
+        except Exception:
+            logger.exception("prepare_model_args: attaching user_security_context failed")
+
+    # Maskiertes Logging (Keys/Secrets)
+    try:
+        model_args_clean = copy.deepcopy(model_args)
+        if model_args_clean.get("extra_body"):
+            for ds in model_args_clean["extra_body"].get("data_sources", []):
+                params = ds.get("parameters", {})
+                for k in ("key", "connection_string", "embedding_key", "encoded_api_key", "api_key"):
+                    if k in params:
+                        params[k] = "*****"
+                auth = params.get("authentication", {})
+                for k in list(auth.keys()):
+                    if k in ("key", "connection_string", "embedding_key", "encoded_api_key", "api_key"):
+                        auth[k] = "*****"
+                emb = params.get("embedding_dependency", {})
+                if isinstance(emb, dict) and "authentication" in emb:
+                    for k in list(emb["authentication"].keys()):
+                        if k in ("key", "connection_string", "embedding_key", "encoded_api_key", "api_key"):
+                            emb["authentication"][k] = "*****"
+        logger.debug("REQUEST BODY (sanitized): %s", json.dumps(model_args_clean, indent=4))
+    except Exception:
+        logger.exception("prepare_model_args: safe logging failed")
 
     return model_args
+
 
 
 async def promptflow_request(request):
@@ -673,6 +703,11 @@ async def send_chat_request(request_body, request_headers):
 
 
 async def complete_chat_request(request_body, request_headers):
+    """
+    Schickt die Anfrage an AOAI/Promptflow, verarbeitet ggf. Function Calls
+    und erzeugt IMMER ein gültiges non_streaming_response-Objekt.
+    """
+    # 1) Promptflow-Short-Circuit
     if app_settings.base_settings.use_promptflow:
         response = await promptflow_request(request_body)
         history_metadata = request_body.get("history_metadata", {})
@@ -682,22 +717,113 @@ async def complete_chat_request(request_body, request_headers):
             app_settings.promptflow.response_field_name,
             app_settings.promptflow.citations_field_name
         )
-    else:
-        response, apim_request_id = await send_chat_request(request_body, request_headers)
+
+    # 2) AOAI-Flow
+    non_streaming_response = None
+    apim_request_id = None
+
+    response, apim_request_id = await send_chat_request(request_body, request_headers)
+
+    # Diagnose-Logging (sicher, ohne Secrets)
+    try:
+        mode = "OWN" if app_settings.base_settings.openai_own_retrieval_enabled else "OYD"
+        has_ds = bool(app_settings.datasource)
+
+        num_choices = 0
+        first_msg_preview = ""
+        try:
+            if hasattr(response, "choices") and response.choices:
+                num_choices = len(response.choices)
+                first = getattr(response.choices[0], "message", None)
+                if first and getattr(first, "content", None):
+                    first_msg_preview = str(first.content)[:200].replace("\n", " ")
+        except Exception:
+            pass
+
+        usage_info = None
+        try:
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                usage_info = usage.model_dump() if hasattr(usage, "model_dump") else dict(usage)
+        except Exception:
+            pass
+
+        logger.info(
+            "AOAI response | mode=%s | has_ds=%s | apim_request_id=%s | choices=%s | usage=%s | preview=%r",
+            mode, has_ds, apim_request_id, num_choices, usage_info, first_msg_preview
+        )
+    except Exception as e:
+        logger.exception("Post-send logging failed: %s", e)
+
+    # 3) (Optionale) Citations debuggen – niemals die Hauptantwort blockieren
+    try:
+        raw = response.model_dump() if hasattr(response, "model_dump") else response
+        logger.debug("RAW OYD RESPONSE (truncated to 4000 chars): %s", str(raw)[:4000])
+
+        if hasattr(response, "choices") and response.choices:
+            msg = response.choices[0].message
+            ctx = getattr(msg, "context", None) if hasattr(msg, "context") else None
+            if ctx:
+                citations = ctx.get("citations") or ctx.get("documents")
+                if citations:
+                    for i, c in enumerate(citations):
+                        text = c.get("content") or c.get("text") or ""
+                        src  = c.get("title") or c.get("filepath") or c.get("id") or "unknown"
+                        logger.debug("CITATION #%d src=%s len=%d preview=%r", i, src, len(text), text[:300])
+    except Exception as e:
+        logger.warning("Failed to debug citations: %s", e)
+
+    # 4) Normale Nicht-Streaming-Antwort bauen (robust)
+    try:
         history_metadata = request_body.get("history_metadata", {})
-        non_streaming_response = format_non_streaming_response(response, history_metadata, apim_request_id)
+        non_streaming_response = format_non_streaming_response(
+            response, history_metadata, apim_request_id
+        )
+    except Exception as e:
+        logger.exception("format_non_streaming_response failed — falling back: %s", e)
+        # Fallback: minimaler Response-Body aus dem SDK-Objekt
+        try:
+            content = ""
+            if hasattr(response, "choices") and response.choices:
+                first = getattr(response.choices[0], "message", None)
+                if first and getattr(first, "content", None):
+                    content = str(first.content)
+            non_streaming_response = {
+                "id": request_body.get("messages", [{}])[-1].get("id") or str(uuid.uuid4()),
+                "choices": [{
+                    "messages": [{"role": "assistant", "content": content}],
+                }],
+                "apim_request_id": apim_request_id
+            }
+        except Exception:
+            # letzter Schutz – niemals ohne Response rausgehen
+            non_streaming_response = {
+                "id": str(uuid.uuid4()),
+                "choices": [{
+                    "messages": [{"role": "assistant", "content": ""}],
+                }],
+                "apim_request_id": apim_request_id
+            }
 
-        if app_settings.azure_openai.function_call_azure_functions_enabled:
-            function_response = await process_function_call(response)  # Add await here
-
+    # 5) Function Calling: falls aktiv, zweiter Turn und erneut formatieren
+    if app_settings.azure_openai.function_call_azure_functions_enabled:
+        try:
+            function_response = await process_function_call(response)
             if function_response:
                 request_body["messages"].extend(function_response)
-
-                response, apim_request_id = await send_chat_request(request_body, request_headers)
+                response2, apim_request_id2 = await send_chat_request(request_body, request_headers)
                 history_metadata = request_body.get("history_metadata", {})
-                non_streaming_response = format_non_streaming_response(response, history_metadata, apim_request_id)
+                try:
+                    non_streaming_response = format_non_streaming_response(
+                        response2, history_metadata, apim_request_id2
+                    )
+                except Exception as e:
+                    logger.exception("format_non_streaming_response (function pass) failed — keeping prior: %s", e)
+        except Exception as e:
+            logger.exception("Function call processing failed — continuing with first answer: %s", e)
 
     return non_streaming_response
+
 
 class AzureOpenaiFunctionCallStreamState():
     def __init__(self):

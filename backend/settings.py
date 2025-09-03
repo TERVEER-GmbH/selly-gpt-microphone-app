@@ -266,20 +266,26 @@ class _AzureSearchSettings(BaseSettings, DatasourcePayloadConstructor):
         env_ignore_empty=True
     )
     _type: Literal["azure_search"] = PrivateAttr(default="azure_search")
+
+    # Standard-Parameter
     top_k: int = Field(default=5, serialization_alias="top_n_documents")
     strictness: int = 3
     enable_in_domain: bool = Field(default=True, serialization_alias="in_scope")
+
     service: str = Field(exclude=True)
     endpoint_suffix: str = Field(default="search.windows.net", exclude=True)
     index: str = Field(serialization_alias="index_name")
     key: Optional[str] = Field(default=None, exclude=True)
+
     use_semantic_search: bool = Field(default=False, exclude=True)
     semantic_search_config: str = Field(default="", serialization_alias="semantic_configuration")
+
     content_columns: Optional[List[str]] = Field(default=None, exclude=True)
     vector_columns: Optional[List[str]] = Field(default=None, exclude=True)
     title_column: Optional[str] = Field(default=None, exclude=True)
     url_column: Optional[str] = Field(default=None, exclude=True)
     filename_column: Optional[str] = Field(default=None, exclude=True)
+
     query_type: Literal[
         'simple',
         'vector',
@@ -289,7 +295,18 @@ class _AzureSearchSettings(BaseSettings, DatasourcePayloadConstructor):
         'vector_semantic_hybrid',
         'vectorSemanticHybrid'
     ] = "simple"
+
     permitted_groups_column: Optional[str] = Field(default=None, exclude=True)
+
+    # NEU: Retrieval-Erweiterungen
+    score_threshold: float = Field(
+        default=0.3,
+        description="Nur Treffer mit Score >= threshold werden übernommen"
+    )
+    max_context_chars: int = Field(
+        default=15000,
+        description="Maximale Länge des Kontextstrings, bevor abgeschnitten wird"
+    )
 
     # Constructed fields
     endpoint: Optional[str] = None
@@ -298,12 +315,12 @@ class _AzureSearchSettings(BaseSettings, DatasourcePayloadConstructor):
     fields_mapping: Optional[dict] = None
     filter: Optional[str] = Field(default=None, exclude=True)
 
+    # ---------------- Validators ---------------- #
     @field_validator('content_columns', 'vector_columns', mode="before")
     @classmethod
     def split_columns(cls, comma_separated_string: str) -> List[str]:
         if isinstance(comma_separated_string, str) and len(comma_separated_string) > 0:
             return parse_multi_columns(comma_separated_string)
-
         return None
 
     @model_validator(mode="after")
@@ -317,7 +334,6 @@ class _AzureSearchSettings(BaseSettings, DatasourcePayloadConstructor):
             self.authentication = {"type": "api_key", "key": self.key}
         else:
             self.authentication = {"type": "system_assigned_managed_identity"}
-
         return self
 
     @model_validator(mode="after")
@@ -336,6 +352,7 @@ class _AzureSearchSettings(BaseSettings, DatasourcePayloadConstructor):
         self.query_type = to_snake(self.query_type)
         return self
 
+    # ---------------- Filter Logic ---------------- #
     def _set_filter_string(self, request: Request) -> str:
         if self.permitted_groups_column:
             user_token = request.headers.get("X-MS-TOKEN-AAD-ACCESS-TOKEN", "")
@@ -348,9 +365,9 @@ class _AzureSearchSettings(BaseSettings, DatasourcePayloadConstructor):
             filter_string = generateFilterString(user_token)
             logger.debug(f"FILTER: {filter_string}")
             return filter_string
-
         return None
 
+    # ---------------- Payload Builder ---------------- #
     def construct_payload_configuration(
         self,
         *args,
@@ -360,8 +377,7 @@ class _AzureSearchSettings(BaseSettings, DatasourcePayloadConstructor):
         if request and self.permitted_groups_column:
             self.filter = self._set_filter_string(request)
 
-        self.embedding_dependency = \
-            self._settings.azure_openai.extract_embedding_dependency()
+        self.embedding_dependency = self._settings.azure_openai.extract_embedding_dependency()
         parameters = self.model_dump(exclude_none=True, by_alias=True)
         parameters.update(self._settings.search.model_dump(exclude_none=True, by_alias=True))
 
@@ -777,6 +793,12 @@ class _BaseSettings(BaseSettings):
     auth_enabled: bool = True
     sanitize_answer: bool = False
     use_promptflow: bool = False
+
+    # Umschalter für eigene Retrieval-Logik statt OYD
+    openai_own_retrieval_enabled: bool = Field(
+        default=False,
+        validation_alias="OPENAI_OWN_RETRIEVAL_ENABLED"
+    )
 
 
 class _AppSettings(BaseModel):
