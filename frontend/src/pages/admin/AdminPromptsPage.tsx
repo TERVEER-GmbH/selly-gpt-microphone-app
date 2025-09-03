@@ -12,10 +12,12 @@ import {
   Alert as MuiAlert,
   FormControlLabel,
   Switch,
-  Box
+  Box,
+  Tooltip,
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
-  import UploadIcon from '@mui/icons-material/Upload'
+import UploadIcon from '@mui/icons-material/Upload'
+import RefreshIcon from '@mui/icons-material/Refresh'
 import { useAdminPrompt } from '../../state/AdminPromptContext'
 import type { Prompt, TestParams } from '../../api/models'
 import { startRun, getRunStatus } from '../../api/api'
@@ -45,9 +47,13 @@ function isEditableTarget(el: EventTarget | null): boolean {
 const AdminPromptsPage: React.FC = () => {
   const { state, loadPrompts, addPrompt, editPrompt, removePrompt, importFile } = useAdminPrompt()
 
+  // ---- Daten-Safety: niemals undefined weiterreichen ----
+  const prompts: Prompt[] = Array.isArray(state.prompts) ? state.prompts : []
+
   // ---- Filter/ Suche / Dichte ----
   const [q, setQ] = useState<string>(() => localStorage.getItem(LS_Q) || '')
-  const allTags = useMemo(() => [...new Set(state.prompts.flatMap(p => p.tags))], [state.prompts])
+  const [qDraft, setQDraft] = useState<string>(q) // entkoppelte Eingabe (debounced)
+  const allTags = useMemo(() => [...new Set(prompts.flatMap(p => p.tags))], [prompts])
   const [activeTags, setActiveTags] = useState<string[]>(
     () => {
       try { return JSON.parse(localStorage.getItem(LS_TAGS) || '[]') } catch { return [] }
@@ -93,14 +99,47 @@ const AdminPromptsPage: React.FC = () => {
     setSnack({ open: true, msg, color })
 
   // ====== Effects ======
-  useEffect(() => { loadPrompts() }, []) // initial laden
 
-  // Persistenz
+  // 1) Initial laden + beim Re-Fokus oder „online“ automatisch neu laden (robuster).
+  useEffect(() => {
+    loadPrompts()
+
+    const onFocus = () => loadPrompts()
+    const onOnline = () => loadPrompts()
+
+    window.addEventListener('visibilitychange', onFocus, { passive: true })
+    window.addEventListener('focus', onFocus, { passive: true })
+    window.addEventListener('online', onOnline, { passive: true })
+
+    return () => {
+      window.removeEventListener('visibilitychange', onFocus)
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('online', onOnline)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 2) Debounced Suche (verhindert „flackernde“ Filter + sorgt für bessere UX)
+  useEffect(() => {
+    const t = window.setTimeout(() => setQ(qDraft), 150)
+    return () => window.clearTimeout(t)
+  }, [qDraft])
+
+  // 3) Persistenz
   useEffect(() => { localStorage.setItem(LS_Q, q) }, [q])
   useEffect(() => { localStorage.setItem(LS_TAGS, JSON.stringify(activeTags)) }, [activeTags])
   useEffect(() => { localStorage.setItem(LS_DENSE, dense ? '1' : '0') }, [dense])
 
-  // Polling Run Status
+  // 4) Sanitisieren: entferne Tags aus activeTags, die es aktuell nicht (mehr) gibt
+  useEffect(() => {
+    if (activeTags.length === 0) return
+    const set = new Set(allTags)
+    const pruned = activeTags.filter(t => set.has(t))
+    if (pruned.length !== activeTags.length) setActiveTags(pruned)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allTags.join('|')]) // change detection auch bei gleicher Länge
+
+  // 5) Polling Run Status (robust gegen Fehler)
   useEffect(() => {
     if (!runId) return
     const iv = window.setInterval(async () => {
@@ -123,7 +162,6 @@ const AdminPromptsPage: React.FC = () => {
     if (!shortcutsEnabled) return
 
     const onKey = (e: KeyboardEvent) => {
-      // blockiere Shortcuts, wenn der Fokus in einem editierbaren Element liegt
       if (isEditableTarget(e.target)) return
 
       const mod = e.metaKey || e.ctrlKey
@@ -148,16 +186,22 @@ const AdminPromptsPage: React.FC = () => {
         setImportOpen(true)
         return
       }
+      // Refresh
+      if (mod && key === 'r') {
+        e.preventDefault()
+        loadPrompts()
+        return
+      }
     }
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [shortcutsEnabled])
+  }, [shortcutsEnabled, loadPrompts])
 
   // ====== Daten-Filter ======
   const filtered = useMemo(() => {
     const ql = q.trim().toLowerCase()
-    return state.prompts.filter(p => {
+    return prompts.filter(p => {
       const hitQ =
         !ql ||
         p.text.toLowerCase().includes(ql) ||
@@ -166,7 +210,7 @@ const AdminPromptsPage: React.FC = () => {
       const hitTags = activeTags.length === 0 || activeTags.every(t => p.tags.includes(t))
       return hitQ && hitTags
     })
-  }, [state.prompts, q, activeTags])
+  }, [prompts, q, activeTags])
 
   // Einzel-Test → nutze den Batch-Dialog nur mit 1 Auswahl
   const handleSingleTest = (promptId: string) => {
@@ -174,37 +218,65 @@ const AdminPromptsPage: React.FC = () => {
     setBatchOpen(true)
   }
 
+  const resetFilters = () => {
+    setQ('')
+    setQDraft('')
+    setActiveTags([])
+  }
+
   return (
     <Container disableGutters maxWidth={false} sx={{ mt: 4, mb: 4 }}>
       {/* Toolbar */}
       <Stack spacing={2}>
-
-        {/* Top-Row: Titel + Primäraktionen (inkl. Batch-Start) */}
+        {/* Top-Row: Titel + Primäraktionen (inkl. Refresh & Batch-Start) */}
         <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
           <Typography variant="h4">Übersicht aller Test Prompts</Typography>
           <Stack direction="row" spacing={1}>
-            <Button
-              startIcon={<AddIcon />}
-              variant="contained"
-              onClick={() => { setEditing(undefined); setEditOpen(true) }}
-            >
-              Neuer Prompt
-            </Button>
-            <Button
-              startIcon={<UploadIcon />}
-              variant="outlined"
-              onClick={() => setImportOpen(true)}
-            >
-              Import
-            </Button>
-            <Button
-              variant="contained"
-              color="primary"
-              disabled={selectedIds.length === 0}
-              onClick={() => setBatchOpen(true)}
-            >
-              Batch Test starten
-            </Button>
+            <Tooltip title="Neu (N)">
+              <span>
+                <Button
+                  startIcon={<AddIcon />}
+                  variant="contained"
+                  onClick={() => { setEditing(undefined); setEditOpen(true) }}
+                >
+                  Neuer Prompt
+                </Button>
+              </span>
+            </Tooltip>
+            <Tooltip title="Import (I)">
+              <span>
+                <Button
+                  startIcon={<UploadIcon />}
+                  variant="outlined"
+                  onClick={() => setImportOpen(true)}
+                >
+                  Import
+                </Button>
+              </span>
+            </Tooltip>
+            <Tooltip title="Neu laden (⌘/Ctrl+R)">
+              <span>
+                <Button
+                  startIcon={<RefreshIcon />}
+                  variant="outlined"
+                  onClick={() => loadPrompts()}
+                >
+                  Aktualisieren
+                </Button>
+              </span>
+            </Tooltip>
+            <Tooltip title={selectedIds.length === 0 ? 'Wähle erst Prompts aus' : ''}>
+              <span>
+                <Button
+                  variant="contained"
+                  color="primary"
+                  disabled={selectedIds.length === 0}
+                  onClick={() => setBatchOpen(true)}
+                >
+                  Batch Test starten
+                </Button>
+              </span>
+            </Tooltip>
           </Stack>
         </Stack>
 
@@ -215,8 +287,8 @@ const AdminPromptsPage: React.FC = () => {
               inputRef={searchRef}
               size="small"
               label="Suchen (Text / Golden / Tag)…"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
+              value={qDraft}
+              onChange={(e) => setQDraft(e.target.value)}
               sx={{ minWidth: 260 }}
             />
 
@@ -228,6 +300,7 @@ const AdminPromptsPage: React.FC = () => {
               label="Kompakt"
               sx={{ mr: 1 }}
             />
+            <Button size="small" onClick={resetFilters}>Filter zurücksetzen</Button>
           </Stack>
 
           {/* Tag-Chips Zeile */}
@@ -252,36 +325,50 @@ const AdminPromptsPage: React.FC = () => {
 
         {/* KPI-Chips */}
         <Stack direction="row" spacing={1}>
-          <Chip size="small" label={`Prompts: ${filtered.length}`} />
-          <Chip size="small" color="primary" label={`Ausgewählt: ${selectedIds.length}`} />
-          <Chip size="small" label={`Tags: ${new Set(state.prompts.flatMap(p => p.tags)).size}`} />
+          <Chip size="small" label={`Prompts: ${prompts.length}`} />
+          <Chip size="small" color="primary" label={`Gefiltert: ${filtered.length}`} />
+          <Chip size="small" label={`Ausgewählt: ${selectedIds.length}`} />
+          <Chip size="small" label={`Tags: ${new Set(prompts.flatMap(p => p.tags)).size}`} />
         </Stack>
       </Stack>
 
       {/* Loading / Error */}
       {state.loading && <Spinner />}
-      {state.error && <Typography color="error" gutterBottom>{state.error}</Typography>}
+      {state.error && (
+        <Paper sx={{ p: 2, mt: 2 }}>
+          <Typography color="error" gutterBottom>{state.error}</Typography>
+          <Button startIcon={<RefreshIcon />} onClick={() => loadPrompts()}>Erneut laden</Button>
+        </Paper>
+      )}
 
       {/* Empty State */}
-      {!state.loading && filtered.length === 0 && (
-        <Paper sx={{ p: 6, textAlign: 'center', mt: 2 }}>
-          <Typography variant="h6" gutterBottom>Keine Prompts gefunden</Typography>
+      {!state.loading && filtered.length === 0 && prompts.length > 0 && (
+        <Paper sx={{ p: 4, textAlign: 'center', mt: 2 }}>
+          <Typography variant="h6" gutterBottom>Keine Treffer</Typography>
           <Typography variant="body2" color="text.secondary" gutterBottom>
-            Passen Sie die Filter an – oder legen Sie den ersten Prompt an.
+            Ihre aktuellen Filter liefern keine Ergebnisse.
           </Typography>
           <Stack direction="row" justifyContent="center" spacing={1} sx={{ mt: 1 }}>
-            <Button
-              variant="contained"
-              startIcon={<AddIcon />}
-              onClick={() => { setEditing(undefined); setEditOpen(true) }}
-            >
+            <Button variant="contained" onClick={resetFilters}>Filter zurücksetzen</Button>
+            <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => loadPrompts()}>
+              Aktualisieren
+            </Button>
+          </Stack>
+        </Paper>
+      )}
+
+      {/* Empty State (gar keine Prompts) */}
+      {!state.loading && prompts.length === 0 && (
+        <Paper sx={{ p: 6, textAlign: 'center', mt: 2 }}>
+          <Typography variant="h6" gutterBottom>Noch keine Prompts vorhanden</Typography>
+          <Typography variant="body2" color="text.secondary" gutterBottom>
+            Legen Sie Ihren ersten Prompt an oder importieren Sie eine Datei.
+          </Typography>
+          <Stack direction="row" justifyContent="center" spacing={1} sx={{ mt: 1 }}>
+            <Button variant="contained" startIcon={<AddIcon />} onClick={() => { setEditing(undefined); setEditOpen(true) }}>
               Neuer Prompt
             </Button>
-            <Button
-              variant="outlined"
-              startIcon={<UploadIcon />}
-              onClick={() => setImportOpen(true)}
-            >
+            <Button variant="outlined" startIcon={<UploadIcon />} onClick={() => setImportOpen(true)}>
               Import
             </Button>
           </Stack>
@@ -302,7 +389,14 @@ const AdminPromptsPage: React.FC = () => {
             selectedIds={selectedIds}
             onSelect={setSelectedIds}
             onEdit={p => { setEditing(p); setEditOpen(true) }}
-            onDelete={id => removePrompt(id)}
+            onDelete={async (id) => {
+              try {
+                await removePrompt(id)
+              } finally {
+                // nach Änderungen sicherheitshalber neu laden
+                loadPrompts()
+              }
+            }}
             onTest={handleSingleTest}
           />
         </Box>
@@ -338,16 +432,19 @@ const AdminPromptsPage: React.FC = () => {
           </Button>
           <Button
             size="small"
-            onClick={() => openSnack('Feature ist im Backlog)', 'info')}
+            onClick={() => openSnack('Feature ist im Backlog', 'info')}
           >
             Exportieren
           </Button>
           <Button
             size="small"
             color="error"
-            onClick={() => {
-              selectedIds.forEach(id => removePrompt(id))
+            onClick={async () => {
+              for (const id of selectedIds) {
+                try { await removePrompt(id) } catch {/* ignore one-off errors */}
+              }
               setSelectedIds([])
+              loadPrompts()
               openSnack('Ausgewählte Prompts gelöscht', 'success')
             }}
           >
@@ -365,11 +462,12 @@ const AdminPromptsPage: React.FC = () => {
         open={editOpen}
         prompt={editing}
         onClose={() => setEditOpen(false)}
-        onSubmit={data => {
-          if (editing) editPrompt(editing.id, data)
-          else addPrompt(data)
+        onSubmit={async (data) => {
+          if (editing) await editPrompt(editing.id, data)
+          else await addPrompt(data)
           setEditOpen(false)
           openSnack(editing ? 'Prompt aktualisiert' : 'Prompt erstellt', 'success')
+          loadPrompts() // robust: immer neu ziehen
         }}
       />
 
@@ -391,6 +489,7 @@ const AdminPromptsPage: React.FC = () => {
             } else {
               openSnack('Import abgeschlossen', 'success')
             }
+            await loadPrompts() // nach Import sicher neu laden
           } catch (e) {
             console.error(e)
             openSnack('Import fehlgeschlagen', 'error')
