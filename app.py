@@ -478,6 +478,7 @@ async def openai_remote_azure_function_call(function_name, function_args):
     return response.text
 
 # ---------- LOCAL HELPERS (self-contained) ----------
+
 def _content_to_text(c):
     """Extrahiert Klartext aus ChatMessage.content (string oder [{type:'text',...}, ...])."""
     if isinstance(c, str):
@@ -576,12 +577,15 @@ def _build_snippets_for_frontend(
     title_field=None,
     url_field=None,
     filepath_field=None,
-    id_field="id",
-    score_field="@search.score",
     max_chars_per_snippet=1200,
     max_snippets=10
 ):
-    """Formt rohe Treffer in FE-kompatible citations + data_points um."""
+    """
+    Formt rohe Treffer in FE-kompatible citations um – EXAKTES Zielformat:
+      { "content", "title", "url", "filepath", "chunk_id" }
+    Alles andere (id, part_index, metadata, reindex_id, score) wird NICHT ausgegeben.
+    JSON-/Tarif-Dumps werden nach Möglichkeit aussortiert.
+    """
     citations, data_points = [], []
     content_fields = content_fields or ["content","text","chunk","page_content","document","body","snippet","chunk_text"]
 
@@ -591,46 +595,95 @@ def _build_snippets_for_frontend(
                 return d[f]
         return None
 
+    def _looks_like_json(text: str) -> bool:
+        if not isinstance(text, str):
+            return False
+        s = text.strip()
+        return (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]"))
+
+    def _preferable_title(title: str) -> bool:
+        """Bevorzugt PDF/FAQ, meidet .json."""
+        if not isinstance(title, str):
+            return False
+        tl = title.lower()
+        if tl.endswith(".json"):
+            return False
+        return ("faq" in tl) or tl.endswith(".pdf") or True  # Default: zulassen
+
     for idx, doc in enumerate(items or []):
         if not isinstance(doc, dict):
             continue
-        raw_text = _first_nonempty(doc, content_fields) or ""
+
+        raw_text = _first_nonempty(doc, content_fields)
         if not raw_text:
             continue
         text = str(raw_text)
+
+        # JSON-/Tarif-großblöcke meiden
+        title = (doc.get(title_field) if title_field else None) or doc.get("title") or ""
+        if _looks_like_json(text) or (isinstance(title, str) and title.lower().endswith(".json")):
+            # nur nehmen, falls uns sonst die Zitate ausgehen – wir überspringen sie hier
+            continue
+
         if len(text) > max_chars_per_snippet:
             text = text[:max_chars_per_snippet] + "…"
-        cid   = doc.get(id_field) or doc.get("key") or doc.get("document_id") or f"doc_{idx}"
-        title = (doc.get(title_field) if title_field else None) or doc.get("title") or "(ohne Titel)"
-        url   = (doc.get(url_field) if url_field else None) or doc.get("url")
+
+        url   = (doc.get(url_field) if url_field else None) or doc.get("url") or None
         fp    = (doc.get(filepath_field) if filepath_field else None) or doc.get("filepath") or doc.get("file_path")
-        score = doc.get(score_field) if score_field in doc else doc.get("@search.score")
+        if not fp and title:
+            # Dateiname ohne Extension als filepath-Fallback (wie im Soll)
+            base = title.rsplit("/",1)[-1].rsplit("\\",1)[-1]
+            fp = ".".join(base.split(".")[:-1]) or base
+
         citations.append({
-            "part_index": None,
             "content": text,
-            "id": str(cid),
-            "title": title,
+            "title": title or "(ohne Titel)",
+            "url": url,
             "filepath": fp,
-            "url": url or "",
-            "metadata": None,
-            "chunk_id": doc.get("chunk_id"),
-            "reindex_id": doc.get("reindex_id") if doc.get("reindex_id") is not None else None
+            "chunk_id": str(doc.get("chunk_id")) if doc.get("chunk_id") is not None else None
         })
         data_points.append(text)
+
         if len(citations) >= max_snippets:
             break
+
     return citations, data_points
-# ---------- END HELPERS ----------
 
 
 def prepare_model_args(request_body, request_headers):
     """
     Baut model_args für AOAI und – falls OWN Retrieval aktiv – _selly_grounding:
-      - History-basierte Query (letzte Turns, hart gekappt) → get_context_for_query_sync
-      - Treffer normalisieren → citations/data_points fürs FE
-      - Optionalen Kontext als System-Message injizieren
+      - History-basierte Query → get_context_for_query_sync
+      - Kontext als System-Message injizieren
+      - Citations exakt aufs Soll-Format reduziert
+      - Intent als Liste zurückgeben
     Rückgabe: (model_args, request_body.get("_selly_grounding"))
     """
+
+    # --- interne Helper: Intent-Liste aus der letzten User-Äußerung bauen ---
+    def _build_intents_from_text(user_text: str):
+        base = (user_text or "").strip().rstrip("?!.")
+        intents = []
+        if base:
+            low = base.lower()
+            if ("unterlagen" in low or "dokument" in low) and ("vertrag" in low):
+                intents = [
+                    "Dokumente beim Vertragsabschluss für Kunden",
+                    "Welche Unterlagen erhält ein Kunde bei Vertragsabschluss?",
+                    "Kundendokumente bei Abschluss eines Vertrags",
+                ]
+            else:
+                intents = [base, f"Anfrage: {base}"]
+        # deduplizieren, max 3
+        seen, out = set(), []
+        for it in intents:
+            t = (it or "").strip()
+            if t and t.lower() not in seen:
+                out.append(t)
+                seen.add(t.lower())
+            if len(out) >= 3:
+                break
+        return out or ([base] if base else [])
 
     request_messages = request_body.get("messages", [])
 
@@ -640,7 +693,7 @@ def prepare_model_args(request_body, request_headers):
 
     messages = [{"role": "system", "content": base_system_prompt}]
 
-    # Eingehende Messages übernehmen (user/assistant/function/tool – Frontend sendet bereits korrektes Format)
+    # Eingehende Messages übernehmen
     for message in request_messages:
         if not message:
             continue
@@ -657,13 +710,14 @@ def prepare_model_args(request_body, request_headers):
             if "function_call" in message:
                 helper["function_call"] = message["function_call"]
             if "context" in message:
+                # bereits korrekt, ggf. JSON-String beibehalten
                 try:
                     helper["context"] = json.loads(message["context"])
                 except Exception:
-                    logger.warning("prepare_model_args: invalid JSON in message.context")
+                    pass
             messages.append(helper)
 
-    # Defender-Kontext (unverändert)
+    # Defender-Kontext
     user_security_context = None
     if os.getenv("MS_DEFENDER_ENABLED", "true").lower() == "true":
         try:
@@ -695,7 +749,7 @@ def prepare_model_args(request_body, request_headers):
             if app_settings.azure_openai.function_call_azure_functions_enabled and len(azure_openai_tools) > 0:
                 model_args["tools"] = azure_openai_tools
 
-            # Query aus History komponieren (mit Fallback auf letzte User-Nachricht)
+            # Query aus History für den Retriever
             user_query = _compose_retrieval_query_from_history(messages, max_messages=6, max_chars=1200)
             if not user_query:
                 user_query = _content_to_text(messages[-1].get("content"))
@@ -729,20 +783,39 @@ def prepare_model_args(request_body, request_headers):
                 filepath_field=filepath_field,
             )
 
-            logger.debug("OWN retrieval: built %d citations, %d data_points (fields=%s)",
-                         len(citations), len(data_points), content_fields)
+            # Citations aufs EXAKTE Soll-Format reduzieren
+            allowed = {"content", "title", "url", "filepath", "chunk_id"}
+            filtered_citations = []
+            for c in citations:
+                if not isinstance(c, dict):
+                    continue
+                fc = {k: (c.get(k) if c.get(k) is not None else None) for k in allowed}
+                # Title/ Filepath Fallbacks
+                if not fc.get("title"):
+                    fc["title"] = "(ohne Titel)"
+                if not fc.get("filepath") and fc.get("title"):
+                    base = fc["title"].rsplit("/",1)[-1].rsplit("\\",1)[-1]
+                    fc["filepath"] = ".".join(base.split(".")[:-1]) or base
+                filtered_citations.append(fc)
 
-            # Optional: Kontext als System-Message injizieren
+            logger.debug("OWN retrieval: built %d citations, %d data_points (reduced to target schema)",
+                         len(filtered_citations), len(data_points))
+
+            # Kontext als System-Message injizieren (falls vorhanden)
             if context_text and context_text.strip():
                 messages.insert(1, {"role": "system", "content": f"Kontext:\n{context_text}"})
                 model_args["messages"] = messages
                 logger.debug("Own retrieval context injected (chars=%d)", len(context_text))
 
+            # Intent-Liste aus der letzten User-Message
+            user_text_last = _content_to_text(messages[-1].get("content"))
+            intent_list = _build_intents_from_text(user_text_last)
+
             # FE-Grounding vormerken
             request_body["_selly_grounding"] = {
                 "mode": "own",
-                "intent": user_query,
-                "citations": citations,
+                "intent": intent_list,            # Liste statt String
+                "citations": filtered_citations,  # exakt: content,title,url,filepath,chunk_id
                 "data_points": data_points
             }
 
@@ -756,7 +829,9 @@ def prepare_model_args(request_body, request_headers):
             if app_settings.datasource:
                 ds_payload = app_settings.datasource.construct_payload_configuration(request=request)
                 model_args["extra_body"] = {"data_sources": [ds_payload]}
-                request_body["_selly_grounding"] = {"mode": "oyd", "intent": _content_to_text(messages[-1].get("content"))}
+                # Intent minimal aus letzter User-Nachricht
+                intent_list = _build_intents_from_text(_content_to_text(messages[-1].get("content")))
+                request_body["_selly_grounding"] = {"mode": "oyd", "intent": intent_list}
         except Exception:
             logger.exception("prepare_model_args: OYD setup failed")
 
@@ -768,7 +843,7 @@ def prepare_model_args(request_body, request_headers):
         except Exception:
             logger.exception("prepare_model_args: attaching user_security_context failed")
 
-    # Maskiertes Logging der Args
+    # Maskiertes Logging
     try:
         model_args_clean = copy.deepcopy(model_args)
         if model_args_clean.get("extra_body"):
@@ -790,9 +865,6 @@ def prepare_model_args(request_body, request_headers):
         logger.exception("prepare_model_args: safe logging failed")
 
     return model_args, request_body.get("_selly_grounding")
-
-
-
 
 async def promptflow_request(request):
     try:
@@ -882,7 +954,7 @@ async def send_chat_request(request_body, request_headers):
 
 
 async def complete_chat_request(request_body: Dict[str, Any], request_headers: Dict[str, str]) -> Dict[str, Any]:
-    # Promptflow passthrough
+    # Promptflow passt durch wie gehabt
     if app_settings.base_settings.use_promptflow:
         pf_resp = await promptflow_request(request_body)
         history_metadata = request_body.get("history_metadata", {})
@@ -893,11 +965,11 @@ async def complete_chat_request(request_body: Dict[str, Any], request_headers: D
             app_settings.promptflow.citations_field_name
         )
 
-    # AOAI + unser Grounding (send_chat_request gibt 3 Werte zurück!)
+    # AOAI + unser Grounding
     response, apim_request_id, grounding_payload = await send_chat_request(request_body, request_headers)
     history_metadata = request_body.get("history_metadata", {})
 
-    # Assistant-Text
+    # Assistant-Text extrahieren
     assistant_text = ""
     try:
         if getattr(response, "choices", None):
@@ -906,49 +978,67 @@ async def complete_chat_request(request_body: Dict[str, Any], request_headers: D
     except Exception:
         logger.exception("Could not extract assistant content")
 
-    # Tool-Content aus eigenem Grounding bauen -> JSON-String: {"citations": [...], "intent": "..."}
+    # Tool-JSON exakt gemäß Zielschema bauen
     tool_json = None
     try:
-        from backend.utils import build_tool_message_from_own_context as _build_tool_from_own
-        if isinstance(grounding_payload, dict):
-            tool_msg_tmp = _build_tool_from_own(grounding_payload)   # liefert {"role":"tool","content": JSON-STRING, ...} oder None
-            if tool_msg_tmp and isinstance(tool_msg_tmp.get("content"), str):
-                tool_json = tool_msg_tmp["content"]
+        if isinstance(grounding_payload, dict) and grounding_payload.get("mode") == "own":
+            citations = grounding_payload.get("citations") or []
+            intents   = grounding_payload.get("intent") or []
+            intent_str = ", ".join(intents) if isinstance(intents, list) else (str(intents) if intents else "")
+            # Nur die erlaubten Keys in den Citations belassen (Sicherheitshalber)
+            allowed = {"content", "title", "url", "filepath", "chunk_id"}
+            norm_citations = []
+            for c in citations:
+                if isinstance(c, dict):
+                    nc = {k: (c.get(k) if c.get(k) is not None else None) for k in allowed}
+                    # Fallbacks
+                    if not nc.get("title"):
+                        nc["title"] = "(ohne Titel)"
+                    if not nc.get("filepath") and nc.get("title"):
+                        base = nc["title"].rsplit("/",1)[-1].rsplit("\\",1)[-1]
+                        nc["filepath"] = ".".join(base.split(".")[:-1]) or base
+                    norm_citations.append(nc)
+            tool_json = json.dumps(
+                {"citations": norm_citations, "intent": intent_str},
+                ensure_ascii=False
+            )
     except Exception:
-        logger.exception("Building tool message from own context failed")
+        logger.exception("Building tool JSON failed")
 
-    # FE-Response: NUR Tool (falls vorhanden) + Assistant
+    # FE-Response-Grundgerüst
     fe = {
         "id": getattr(response, "id", str(uuid.uuid4())),
         "model": getattr(response, "model", app_settings.azure_openai.model),
         "created": getattr(response, "created", int(time.time())),
-        "object": getattr(response, "object", "chat.completion"),
+        "object": "extensions.chat.completion",
         "choices": [{"messages": []}],
         "history_metadata": history_metadata,
         "apim-request-id": apim_request_id
     }
 
-    # 1) TOOL direkt vor ASSISTANT (wenn wir welche haben)
+    # WICHTIG: Keine vorherigen Request-Nachrichten in die Antwort einbetten.
+    # Das Frontend fügt User-/History-Nachrichten selbst hinzu –
+    # hier nur (optional) Tool + Assistant für DIESE Antwort liefern.
+
+    # 1) TOOL direkt vor ASSISTANT (nur wenn vorhanden) – ohne id/date Felder
     if tool_json:
         fe["choices"][0]["messages"].append({
-            "id": getattr(response, "id", str(uuid.uuid4())),
             "role": "tool",
-            "content": tool_json,
-            "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            "content": tool_json
         })
 
-    # 2) ASSISTANT – plus context-Fallback mit demselben JSON
-    assistant_msg = {
+    # 2) ASSISTANT – KEIN 'context' Feld anhängen
+    fe["choices"][0]["messages"].append({
         "role": "assistant",
-        "id": str(uuid.uuid4()),
         "content": assistant_text or ""
-    }
-    if tool_json:
-        # WICHTIG: Das Frontend akzeptiert auch assistant.context (JSON-String)
-        assistant_msg["context"] = tool_json
-    fe["choices"][0]["messages"].append(assistant_msg)
+    })
 
-    logger.debug("Final FE response (truncated): %s", json.dumps(fe, indent=2)[:2000])
+    # Logging (truncated)
+    try:
+        logger.debug("Final FE response (truncated): %s", json.dumps(fe, indent=2))
+    except Exception:
+        logger.exception("Logging FE response failed")
+
     return fe
 
 
@@ -1017,11 +1107,50 @@ async def process_function_call_stream(completionChunk, function_call_stream_sta
 
 
 async def stream_chat_request(request_body, request_headers):
-    # NEU: 3 Werte entpacken, grounding_payload wird hier nicht gebraucht
-    response, apim_request_id, _grounding_payload = await send_chat_request(request_body, request_headers)
+    # 3 Werte entpacken, grounding_payload wird für Tool-Message genutzt
+    response, apim_request_id, grounding_payload = await send_chat_request(request_body, request_headers)
     history_metadata = request_body.get("history_metadata", {})
 
     async def generate(apim_request_id, history_metadata):
+        # Falls eigener Retrieval-Modus aktiv war, sende zuerst eine Tool-Message (nur wenn Inhalte vorhanden)
+        own_mode = isinstance(grounding_payload, dict) and grounding_payload.get("mode") == "own"
+        sent_initial_tool = False
+        try:
+            if own_mode:
+                citations = grounding_payload.get("citations") or []
+                intents = grounding_payload.get("intent") or []
+                intent_str = ", ".join(intents) if isinstance(intents, list) else (str(intents) if intents else "")
+                allowed = {"content", "title", "url", "filepath", "chunk_id"}
+                norm_citations = []
+                for c in citations:
+                    if isinstance(c, dict):
+                        nc = {k: (c.get(k) if c.get(k) is not None else None) for k in allowed}
+                        if not nc.get("title"):
+                            nc["title"] = "(ohne Titel)"
+                        if not nc.get("filepath") and nc.get("title"):
+                            base = nc["title"].rsplit("/",1)[-1].rsplit("\\",1)[-1]
+                            nc["filepath"] = ".".join(base.split(".")[:-1]) or base
+                        norm_citations.append(nc)
+
+                if norm_citations or intent_str:
+                    tool_event = {
+                        "id": str(uuid.uuid4()),
+                        "model": getattr(app_settings.azure_openai, "model", ""),
+                        "created": int(time.time()),
+                        "object": "chat.completion.chunk",
+                        "choices": [{
+                            "messages": [{
+                                "role": "tool",
+                                "content": json.dumps({"citations": norm_citations, "intent": intent_str}, ensure_ascii=False)
+                            }]
+                        }],
+                        "history_metadata": history_metadata,
+                        "apim-request-id": apim_request_id
+                    }
+                    sent_initial_tool = True
+                    yield tool_event
+        except Exception:
+            logger.exception("stream_chat_request: failed to emit initial tool message")
         if app_settings.azure_openai.function_call_azure_functions_enabled:
             function_call_stream_state = AzureOpenaiFunctionCallStreamState()
 
@@ -1032,17 +1161,40 @@ async def stream_chat_request(request_body, request_headers):
                 )
 
                 if stream_state == "INITIAL":
-                    yield format_stream_response(completionChunk, history_metadata, apim_request_id)
+                    resp_obj = format_stream_response(completionChunk, history_metadata, apim_request_id)
+                    if own_mode and sent_initial_tool and resp_obj and resp_obj.get("choices"):
+                        msgs = resp_obj["choices"][0].get("messages") or []
+                        filtered = [m for m in msgs if m.get("role") != "tool"]
+                        if not filtered:
+                            continue
+                        resp_obj["choices"][0]["messages"] = filtered
+                    yield resp_obj
 
                 if stream_state == "COMPLETED":
                     request_body["messages"].extend(function_call_stream_state.function_messages)
                     # NEU: erneut 3 Werte entpacken; grounding_payload wird nicht genutzt
                     function_response, apim_request_id, _ = await send_chat_request(request_body, request_headers)
                     async for functionCompletionChunk in function_response:
-                        yield format_stream_response(functionCompletionChunk, history_metadata, apim_request_id)
+                        resp_obj2 = format_stream_response(functionCompletionChunk, history_metadata, apim_request_id)
+                        if own_mode and sent_initial_tool and resp_obj2 and resp_obj2.get("choices"):
+                            msgs2 = resp_obj2["choices"][0].get("messages") or []
+                            filtered2 = [m for m in msgs2 if m.get("role") != "tool"]
+                            if not filtered2:
+                                continue
+                            resp_obj2["choices"][0]["messages"] = filtered2
+                        yield resp_obj2
         else:
             async for completionChunk in response:
-                yield format_stream_response(completionChunk, history_metadata, apim_request_id)
+                resp_obj = format_stream_response(completionChunk, history_metadata, apim_request_id)
+                # Bei eigenem Retrieval: zusätzliche Tool-Nachrichten aus delta.context unterdrücken,
+                # wenn bereits ein Tool-Event gesendet wurde
+                if own_mode and sent_initial_tool and resp_obj and resp_obj.get("choices"):
+                    msgs = resp_obj["choices"][0].get("messages") or []
+                    filtered = [m for m in msgs if m.get("role") != "tool"]
+                    if not filtered:
+                        continue
+                    resp_obj["choices"][0]["messages"] = filtered
+                yield resp_obj
 
     return generate(apim_request_id=apim_request_id, history_metadata=history_metadata)
 
