@@ -3,8 +3,10 @@ import json
 import logging
 import requests
 import dataclasses
+import json
 
-from typing import List
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 # DEBUG = os.environ.get("DEBUG", "false")
 # if DEBUG.lower() == "true":
@@ -179,16 +181,24 @@ def format_pf_non_streaming_response(
     logger.debug(f"chatCompletion: {chatCompletion}")
     try:
         messages = []
+
+        # (1) Optional: letztes User-Echo aus PF ist nicht bekannt → hier NICHT setzen.
+        #  -> Das Echo setzt du zentral in app.complete_chat_request (siehe unten).
+        #    Für PF-Pfad brauchst du daher dieselbe Logik dort (s. Punkt 1b).
+
+        # (2) Tool zuerst
+        if citations_field_name in chatCompletion:
+            citation_content = {"intent": "", "citations": chatCompletion[citations_field_name], "data_points": []}
+            messages.append({
+                "role": "tool",
+                "content": json.dumps(citation_content, ensure_ascii=False)
+            })
+
+        # (3) Assistant danach
         if response_field_name in chatCompletion:
             messages.append({
                 "role": "assistant",
                 "content": chatCompletion[response_field_name]
-            })
-        if citations_field_name in chatCompletion:
-            citation_content= {"citations": chatCompletion[citations_field_name]}
-            messages.append({
-                "role": "tool",
-                "content": json.dumps(citation_content)
             })
 
         response_obj = {
@@ -197,11 +207,7 @@ def format_pf_non_streaming_response(
             "created": "",
             "object": "",
             "history_metadata": history_metadata,
-            "choices": [
-                {
-                    "messages": messages,
-                }
-            ]
+            "choices": [{ "messages": messages }]
         }
         return response_obj
     except Exception as e:
@@ -232,3 +238,154 @@ def comma_separated_string_to_list(s: str) -> List[str]:
     Split comma-separated values into a list.
     '''
     return s.strip().replace(' ', '').split(',')
+
+####################
+# GROUNDING
+####################
+
+def _map_citation(c: Dict[str, Any]) -> Dict[str, Any]:
+    """Mappt beliebige RAG/SDK-Zitation auf FE-Citation-Schema."""
+    # Eingänge flexibel: 'content' | 'text', 'title' | 'filepath' | 'id', ...
+    content = c.get("content") or c.get("text") or ""
+    cid = (
+        c.get("id")
+        or c.get("reindex_id")
+        or c.get("filepath")
+        or c.get("title")
+        or c.get("url")
+        or "unknown"
+    )
+
+    # optionales Metadaten-Feld als String (FE erwartet string | null)
+    metadata_obj = (
+        c.get("metadata")
+        or c.get("@search")  # falls was vom Search kommt
+        or {}
+    )
+    try:
+        metadata_str = json.dumps(metadata_obj, ensure_ascii=False) if metadata_obj else None
+    except Exception:
+        metadata_str = None
+
+    return {
+        # FE-Felder (siehe api/models.ts)
+        "part_index": c.get("part_index"),             # optional
+        "content": content,
+        "id": str(cid),
+        "title": c.get("title"),
+        "filepath": c.get("filepath"),
+        "url": c.get("url"),
+        "metadata": metadata_str,                      # string | null
+        "chunk_id": c.get("chunk_id") or c.get("chunkId"),
+        "reindex_id": c.get("reindex_id"),            # optional
+        # Backend-interne Felder werden bewusst NICHT übertragen
+    }
+
+def _build_tool_message_content(
+    citations: List[Dict[str, Any]],
+    intent: Optional[str] = None,
+) -> str:
+    """Erzeugt den JSON-String, den das FE erwartet: { citations, intent }."""
+    payload = {
+        "citations": [_map_citation(c) for c in citations],
+        "intent": intent or "",  # Platzhalter, falls unbekannt
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+def build_tool_message_from_oyd_context(sdk_ctx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Nimmt das Azure OpenAI 'context' Objekt (OYD) und baut die Tool-Message.
+    Erwartet Felder wie 'citations' oder 'documents' im SDK-Kontext.
+    """
+    raw = sdk_ctx.get("citations") or sdk_ctx.get("documents") or []
+    content = _build_tool_message_content(raw, intent=sdk_ctx.get("intent"))
+    return {
+        "id": "",  # wird später auf die Response-ID gesetzt
+        "role": "tool",
+        "content": content,
+        "date": "",  # wird im Stream/Formatter gesetzt
+    } if raw else None
+
+def build_tool_message_from_own_context(own_ctx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Nimmt unseren eigenen Retrieval-Block (z. B. _selly_grounding) und baut Tool-Message.
+    Akzeptiert:
+      - "citations": [...], optional
+      - "context_text": string (falls keine Zitationen vorliegen)
+    """
+    if not isinstance(own_ctx, dict):
+        return None
+
+    # bevorzugt strukturierte Zitationen; andernfalls eine einzige „Text“-Citation als Fallback
+    raw = own_ctx.get("citations") or []
+    if not raw and own_ctx.get("context_text"):
+        raw = [{
+            "id": "context_text",
+            "title": "Context",
+            "content": own_ctx.get("context_text"),
+            "url": None,
+            "filepath": None,
+        }]
+
+    if not raw:
+        return None
+
+    content = _build_tool_message_content(raw, intent=own_ctx.get("intent"))
+    return {
+        "id": "",
+        "role": "tool",
+        "content": content,
+        "date": "",
+    }
+
+def attach_tool_message(
+    response_obj: Dict[str, Any],
+    oyd_ctx: Optional[Dict[str, Any]],
+    own_ctx: Optional[Dict[str, Any]],
+) -> None:
+    """
+    Mutiert response_obj so, dass choices[0].messages ggf. eine 'tool'-Message
+    direkt VOR der letzten 'assistant'-Message enthält.
+    """
+    try:
+        choices = response_obj.get("choices") or []
+        if not choices:
+            return
+        msgs = choices[0].get("messages") or []
+        # letzte Assistant-Message finden
+        last_idx = None
+        for i in range(len(msgs) - 1, -1, -1):
+            if msgs[i].get("role") == "assistant":
+                last_idx = i
+                break
+        if last_idx is None:
+            return
+
+        # Tool-Message bauen
+        tool_msg = None
+        if isinstance(oyd_ctx, dict):
+            tool_msg = build_tool_message_from_oyd_context(oyd_ctx)
+        if tool_msg is None and isinstance(own_ctx, dict):
+            tool_msg = build_tool_message_from_own_context(own_ctx)
+
+        if not tool_msg:
+            return
+
+        # Response-Metadaten übernehmen
+        tool_msg["id"] = response_obj.get("id") or tool_msg["id"] or ""
+        tool_msg["date"] = datetime.utcnow().isoformat() + "Z"
+
+        # WICHTIG: assistant.context entfernen (FE liest aus tool-message)
+        try:
+            if "context" in msgs[last_idx]:
+                del msgs[last_idx]["context"]
+        except Exception:
+            pass
+
+        # Tool vor die Assistant-Message einfügen
+        msgs.insert(last_idx, tool_msg)
+        choices[0]["messages"] = msgs
+    except Exception:
+        # fail-safe: niemals den Response-Aufbau sprengen
+        import logging
+        logging.getLogger("logger").exception("attach_tool_message failed")

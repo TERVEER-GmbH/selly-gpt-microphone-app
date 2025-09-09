@@ -23,6 +23,8 @@ from quart import (
     abort
 )
 
+from typing import Any, Dict, Optional, List
+
 from openai import AsyncAzureOpenAI
 from azure.identity.aio import (
     DefaultAzureCredential,
@@ -40,6 +42,7 @@ from backend.utils import (
     format_non_streaming_response,
     convert_to_pf_format,
     format_pf_non_streaming_response,
+    attach_tool_message
 )
 from backend.db.init_clients import (
     init_cosmos_history_client,
@@ -254,7 +257,7 @@ async def transcribe():
         logger.warning("Recognition timeout after 30s")
     except Exception as e:
         recognizer.stop_continuous_recognition()
-        logger.exceptionf("Speech recognition failed. Error: {e}")
+        logger.exception("Speech recognition failed. Error: {e}")
         return jsonify({"text": "", "error": "speech recognition failed"}), 500
 
     # --- Return Result ---
@@ -474,25 +477,173 @@ async def openai_remote_azure_function_call(function_name, function_args):
 
     return response.text
 
+# ---------- LOCAL HELPERS (self-contained) ----------
+def _content_to_text(c):
+    """Extrahiert Klartext aus ChatMessage.content (string oder [{type:'text',...}, ...])."""
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        parts = []
+        for it in c:
+            if isinstance(it, dict) and it.get("type") == "text":
+                t = it.get("text")
+                if isinstance(t, str) and t.strip():
+                    parts.append(t)
+        return " ".join(parts)
+    return ""
+
+def _compose_retrieval_query_from_history(msgs, max_messages=6, max_chars=1200):
+    """Baut Query aus den letzten (user/assistant)-Nachrichten, ignoriert tool/system, cappt Länge."""
+    if not msgs:
+        return ""
+    buf = []
+    # rückwärts durchs Gespräch, nur user/assistant, jeweils Text extrahieren
+    for m in reversed(msgs):
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        txt = _content_to_text(m.get("content"))
+        if not txt:
+            continue
+        tag = "User" if role == "user" else "Assistant"
+        buf.append(f"{tag}: {txt}")
+        if len(buf) >= max_messages:
+            break
+    if not buf:
+        return ""
+    buf.reverse()
+    joined = "\n".join(buf).strip()
+    # hartes Limit – nehme das letzte Fenster (meist jüngster Kontext am Ende)
+    if len(joined) > max_chars:
+        joined = joined[-max_chars:]
+    return joined
+
+def _normalize_grounding_context(ctx):
+    """Wie gehabt: (context_text:str, items:list[dict|str]) aus beliebigen Formen extrahieren."""
+    if ctx is None:
+        return "", []
+    if isinstance(ctx, str):
+        s = ctx.strip()
+        if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+            try:
+                parsed = json.loads(s)
+                return _normalize_grounding_context(parsed)
+            except Exception:
+                return s, []
+        return s, []
+    if isinstance(ctx, dict):
+        text = (
+            ctx.get("text")
+            or ctx.get("context")
+            or ctx.get("joined")
+            or ctx.get("content")
+            or ctx.get("fulltext")
+            or ""
+        )
+        item_keys = ["hits","items","citations","results","documents","docs","matches","snippets","chunks"]
+        items = []
+        for k in item_keys:
+            v = ctx.get(k)
+            if isinstance(v, str):
+                try:
+                    v_parsed = json.loads(v)
+                    if isinstance(v_parsed, list) and v_parsed:
+                        items = v_parsed; break
+                except Exception:
+                    pass
+            if isinstance(v, list) and v:
+                items = v; break
+        if not items:
+            possible_doc = ctx.get("doc") or ctx.get("document") or ctx.get("record")
+            if possible_doc:
+                items = [possible_doc]
+        return text or "", (items if isinstance(items, list) else [])
+    if isinstance(ctx, list):
+        parts, items = [], []
+        for it in ctx:
+            if isinstance(it, str):
+                parts.append(it)
+            else:
+                items.append(it)
+        text = "\n---\n".join([p for p in parts if p])
+        return text, items
+    return str(ctx), []
+
+def _build_snippets_for_frontend(
+    items,
+    *,
+    content_fields=None,
+    title_field=None,
+    url_field=None,
+    filepath_field=None,
+    id_field="id",
+    score_field="@search.score",
+    max_chars_per_snippet=1200,
+    max_snippets=10
+):
+    """Formt rohe Treffer in FE-kompatible citations + data_points um."""
+    citations, data_points = [], []
+    content_fields = content_fields or ["content","text","chunk","page_content","document","body","snippet","chunk_text"]
+
+    def _first_nonempty(d, fields):
+        for f in fields:
+            if isinstance(d, dict) and d.get(f):
+                return d[f]
+        return None
+
+    for idx, doc in enumerate(items or []):
+        if not isinstance(doc, dict):
+            continue
+        raw_text = _first_nonempty(doc, content_fields) or ""
+        if not raw_text:
+            continue
+        text = str(raw_text)
+        if len(text) > max_chars_per_snippet:
+            text = text[:max_chars_per_snippet] + "…"
+        cid   = doc.get(id_field) or doc.get("key") or doc.get("document_id") or f"doc_{idx}"
+        title = (doc.get(title_field) if title_field else None) or doc.get("title") or "(ohne Titel)"
+        url   = (doc.get(url_field) if url_field else None) or doc.get("url")
+        fp    = (doc.get(filepath_field) if filepath_field else None) or doc.get("filepath") or doc.get("file_path")
+        score = doc.get(score_field) if score_field in doc else doc.get("@search.score")
+        citations.append({
+            "part_index": None,
+            "content": text,
+            "id": str(cid),
+            "title": title,
+            "filepath": fp,
+            "url": url or "",
+            "metadata": None,
+            "chunk_id": doc.get("chunk_id"),
+            "reindex_id": doc.get("reindex_id") if doc.get("reindex_id") is not None else None
+        })
+        data_points.append(text)
+        if len(citations) >= max_snippets:
+            break
+    return citations, data_points
+# ---------- END HELPERS ----------
+
+
 def prepare_model_args(request_body, request_headers):
+    """
+    Baut model_args für AOAI und – falls OWN Retrieval aktiv – _selly_grounding:
+      - History-basierte Query (letzte Turns, hart gekappt) → get_context_for_query_sync
+      - Treffer normalisieren → citations/data_points fürs FE
+      - Optionalen Kontext als System-Message injizieren
+    Rückgabe: (model_args, request_body.get("_selly_grounding"))
+    """
+
     request_messages = request_body.get("messages", [])
 
-    # Immer einen Basis-Systemprompt setzen:
-    # 1) falls vorhanden: Search.role_information (ENV: AZURE_OPENAI_SYSTEM_MESSAGE)
-    # 2) sonst: AzureOpenAI.system_message
+    # Basis-Systemprompt
     base_system_prompt = getattr(app_settings.search, "role_information", None) \
                          or app_settings.azure_openai.system_message
 
-    messages = [{
-        "role": "system",
-        "content": base_system_prompt
-    }]
+    messages = [{"role": "system", "content": base_system_prompt}]
 
-    # Eingehende Messages übernehmen
+    # Eingehende Messages übernehmen (user/assistant/function/tool – Frontend sendet bereits korrektes Format)
     for message in request_messages:
         if not message:
             continue
-
         role = message.get("role")
         if role == "user":
             messages.append({"role": "user", "content": message.get("content", "")})
@@ -512,7 +663,7 @@ def prepare_model_args(request_body, request_headers):
                     logger.warning("prepare_model_args: invalid JSON in message.context")
             messages.append(helper)
 
-    # Microsoft Defender: User Security Context
+    # Defender-Kontext (unverändert)
     user_security_context = None
     if os.getenv("MS_DEFENDER_ENABLED", "true").lower() == "true":
         try:
@@ -523,7 +674,7 @@ def prepare_model_args(request_body, request_headers):
         except Exception:
             logger.exception("prepare_model_args: building user_security_context failed")
 
-    # Basis-Parameter für Chat Completion
+    # Basis-Parameter für AOAI
     model_args = {
         "messages": messages,
         "temperature": app_settings.azure_openai.temperature,
@@ -534,49 +685,82 @@ def prepare_model_args(request_body, request_headers):
         "model": app_settings.azure_openai.model
     }
 
-    # Nur wenn die letzte Message vom User ist, machen Retrieval/Tools Sinn
-    if messages and messages[-1]["role"] == "user":
-        # Tools (remote function calling) aktivieren, falls konfiguriert
-        if app_settings.azure_openai.function_call_azure_functions_enabled and len(azure_openai_tools) > 0:
-            model_args["tools"] = azure_openai_tools
+    # Grounding-Merker fürs FE
+    request_body["_selly_grounding"] = {"mode": None}
 
-        # Umschalter: eigener Retriever vs. OYD data_sources
+    # ---------- OWN RETRIEVAL ----------
+    if messages and messages[-1]["role"] == "user" and app_settings.base_settings.openai_own_retrieval_enabled:
         try:
-            if app_settings.base_settings.openai_own_retrieval_enabled:
-                logger.info("Retrieval-Mode = OWN (OPENAI_OWN_RETRIEVAL_ENABLED=True)")
+            # Tools ggf. anhängen (falls verwendet)
+            if app_settings.azure_openai.function_call_azure_functions_enabled and len(azure_openai_tools) > 0:
+                model_args["tools"] = azure_openai_tools
 
-                user_query = messages[-1]["content"]
-                context = None
-                try:
-                    context = get_context_for_query_sync(user_query)
-                except Exception:
-                    logger.exception("Own retrieval failed; proceeding without extra context")
+            # Query aus History komponieren (mit Fallback auf letzte User-Nachricht)
+            user_query = _compose_retrieval_query_from_history(messages, max_messages=6, max_chars=1200)
+            if not user_query:
+                user_query = _content_to_text(messages[-1].get("content"))
 
-                if context and context.strip():
-                    # Immer direkt NACH dem Basis-Systemprompt injizieren
-                    insertion_index = 1
-                    messages.insert(insertion_index, {
-                        "role": "system",
-                        "content": f"Kontext:\n{context}"
-                    })
-                    model_args["messages"] = messages
-                    logger.debug("Own retrieval context injected (chars=%d)", len(context))
-                else:
-                    logger.warning("Own retrieval returned no context")
-            else:
-                logger.info("Retrieval-Mode = OYD (data_sources aktiv)")
-                if app_settings.datasource:
-                    model_args["extra_body"] = {
-                        "data_sources": [
-                            app_settings.datasource.construct_payload_configuration(
-                                request=request
-                            )
-                        ]
-                    }
+            logger.debug("Retriever query (len=%d): %r", len(user_query or ""), (user_query or "")[:300])
+
+            # Kontext holen
+            context_raw = None
+            try:
+                context_raw = get_context_for_query_sync(user_query)
+            except Exception:
+                logger.exception("Own retrieval failed; proceeding without extra context")
+
+            context_text, items = _normalize_grounding_context(context_raw)
+
+            # Feld-Mapping aus Settings + robuste Defaults
+            ds = getattr(app_settings, "datasource", None)
+            cfg_fields = (getattr(ds, "content_columns", None) if ds else None) or []
+            fallback_fields = ["content","text","chunk","page_content","document","body","snippet","chunk_text"]
+            content_fields = list(dict.fromkeys([*cfg_fields, *fallback_fields]))
+
+            title_field    = getattr(ds, "title_column", None) if ds else None
+            url_field      = getattr(ds, "url_column", None) if ds else None
+            filepath_field = getattr(ds, "filename_column", None) if ds else None
+
+            citations, data_points = _build_snippets_for_frontend(
+                items,
+                content_fields=content_fields,
+                title_field=title_field,
+                url_field=url_field,
+                filepath_field=filepath_field,
+            )
+
+            logger.debug("OWN retrieval: built %d citations, %d data_points (fields=%s)",
+                         len(citations), len(data_points), content_fields)
+
+            # Optional: Kontext als System-Message injizieren
+            if context_text and context_text.strip():
+                messages.insert(1, {"role": "system", "content": f"Kontext:\n{context_text}"})
+                model_args["messages"] = messages
+                logger.debug("Own retrieval context injected (chars=%d)", len(context_text))
+
+            # FE-Grounding vormerken
+            request_body["_selly_grounding"] = {
+                "mode": "own",
+                "intent": user_query,
+                "citations": citations,
+                "data_points": data_points
+            }
+
         except Exception:
-            logger.exception("prepare_model_args: retrieval switching failed")
+            logger.exception("prepare_model_args: own retrieval pipeline failed")
 
-    # Defender-Kontext unter extra_body anhängen
+    # ---------- (Optional) OYD – falls OWN aus ist und DataSources aktiv sind ----------
+    elif messages and messages[-1]["role"] == "user" and not app_settings.base_settings.openai_own_retrieval_enabled:
+        try:
+            logger.info("Retrieval-Mode = OYD (data_sources aktiv)")
+            if app_settings.datasource:
+                ds_payload = app_settings.datasource.construct_payload_configuration(request=request)
+                model_args["extra_body"] = {"data_sources": [ds_payload]}
+                request_body["_selly_grounding"] = {"mode": "oyd", "intent": _content_to_text(messages[-1].get("content"))}
+        except Exception:
+            logger.exception("prepare_model_args: OYD setup failed")
+
+    # Defender-Kontext anhängen
     if user_security_context:
         try:
             model_args.setdefault("extra_body", {})
@@ -584,29 +768,29 @@ def prepare_model_args(request_body, request_headers):
         except Exception:
             logger.exception("prepare_model_args: attaching user_security_context failed")
 
-    # Maskiertes Logging (Keys/Secrets)
+    # Maskiertes Logging der Args
     try:
         model_args_clean = copy.deepcopy(model_args)
         if model_args_clean.get("extra_body"):
-            for ds in model_args_clean["extra_body"].get("data_sources", []):
-                params = ds.get("parameters", {})
-                for k in ("key", "connection_string", "embedding_key", "encoded_api_key", "api_key"):
-                    if k in params:
-                        params[k] = "*****"
+            for ds_item in model_args_clean["extra_body"].get("data_sources", []):
+                params = ds_item.get("parameters", {})
+                for k in ("key","connection_string","embedding_key","encoded_api_key","api_key"):
+                    if k in params: params[k] = "*****"
                 auth = params.get("authentication", {})
                 for k in list(auth.keys()):
-                    if k in ("key", "connection_string", "embedding_key", "encoded_api_key", "api_key"):
+                    if k in ("key","connection_string","embedding_key","encoded_api_key","api_key"):
                         auth[k] = "*****"
                 emb = params.get("embedding_dependency", {})
                 if isinstance(emb, dict) and "authentication" in emb:
                     for k in list(emb["authentication"].keys()):
-                        if k in ("key", "connection_string", "embedding_key", "encoded_api_key", "api_key"):
+                        if k in ("key","connection_string","embedding_key","encoded_api_key","api_key"):
                             emb["authentication"][k] = "*****"
         logger.debug("REQUEST BODY (sanitized): %s", json.dumps(model_args_clean, indent=4))
     except Exception:
         logger.exception("prepare_model_args: safe logging failed")
 
-    return model_args
+    return model_args, request_body.get("_selly_grounding")
+
 
 
 
@@ -681,148 +865,91 @@ async def process_function_call(response):
     return None
 
 async def send_chat_request(request_body, request_headers):
-    filtered_messages = []
-    messages = request_body.get("messages", [])
-    for message in messages:
-        if message.get("role") != 'tool':
-            filtered_messages.append(message)
+    filtered = [m for m in request_body.get("messages", []) if m.get("role") != "tool"]
+    request_body = dict(request_body, messages=filtered)
 
-    request_body['messages'] = filtered_messages
-    model_args = prepare_model_args(request_body, request_headers)
+    model_args, grounding_payload = prepare_model_args(request_body, request_headers)
 
     try:
         azure_openai_client = await init_openai_client()
         raw_response = await azure_openai_client.chat.completions.with_raw_response.create(**model_args)
         response = raw_response.parse()
         apim_request_id = raw_response.headers.get("apim-request-id")
-    except Exception as e:
+        return response, apim_request_id, grounding_payload
+    except Exception:
         logger.exception("Exception in send_chat_request")
-        raise e
-
-    return response, apim_request_id
+        raise
 
 
-async def complete_chat_request(request_body, request_headers):
-    """
-    Schickt die Anfrage an AOAI/Promptflow, verarbeitet ggf. Function Calls
-    und erzeugt IMMER ein gültiges non_streaming_response-Objekt.
-    """
-    # 1) Promptflow-Short-Circuit
+async def complete_chat_request(request_body: Dict[str, Any], request_headers: Dict[str, str]) -> Dict[str, Any]:
+    # Promptflow passthrough
     if app_settings.base_settings.use_promptflow:
-        response = await promptflow_request(request_body)
+        pf_resp = await promptflow_request(request_body)
         history_metadata = request_body.get("history_metadata", {})
         return format_pf_non_streaming_response(
-            response,
+            pf_resp,
             history_metadata,
             app_settings.promptflow.response_field_name,
             app_settings.promptflow.citations_field_name
         )
 
-    # 2) AOAI-Flow
-    non_streaming_response = None
-    apim_request_id = None
+    # AOAI + unser Grounding (send_chat_request gibt 3 Werte zurück!)
+    response, apim_request_id, grounding_payload = await send_chat_request(request_body, request_headers)
+    history_metadata = request_body.get("history_metadata", {})
 
-    response, apim_request_id = await send_chat_request(request_body, request_headers)
-
-    # Diagnose-Logging (sicher, ohne Secrets)
+    # Assistant-Text
+    assistant_text = ""
     try:
-        mode = "OWN" if app_settings.base_settings.openai_own_retrieval_enabled else "OYD"
-        has_ds = bool(app_settings.datasource)
+        if getattr(response, "choices", None):
+            m = response.choices[0].message
+            assistant_text = getattr(m, "content", "") or ""
+    except Exception:
+        logger.exception("Could not extract assistant content")
 
-        num_choices = 0
-        first_msg_preview = ""
-        try:
-            if hasattr(response, "choices") and response.choices:
-                num_choices = len(response.choices)
-                first = getattr(response.choices[0], "message", None)
-                if first and getattr(first, "content", None):
-                    first_msg_preview = str(first.content)[:200].replace("\n", " ")
-        except Exception:
-            pass
-
-        usage_info = None
-        try:
-            usage = getattr(response, "usage", None)
-            if usage is not None:
-                usage_info = usage.model_dump() if hasattr(usage, "model_dump") else dict(usage)
-        except Exception:
-            pass
-
-        logger.info(
-            "AOAI response | mode=%s | has_ds=%s | apim_request_id=%s | choices=%s | usage=%s | preview=%r",
-            mode, has_ds, apim_request_id, num_choices, usage_info, first_msg_preview
-        )
-    except Exception as e:
-        logger.exception("Post-send logging failed: %s", e)
-
-    # 3) (Optionale) Citations debuggen – niemals die Hauptantwort blockieren
+    # Tool-Content aus eigenem Grounding bauen -> JSON-String: {"citations": [...], "intent": "..."}
+    tool_json = None
     try:
-        raw = response.model_dump() if hasattr(response, "model_dump") else response
-        logger.debug("RAW OYD RESPONSE (truncated to 4000 chars): %s", str(raw)[:4000])
+        from backend.utils import build_tool_message_from_own_context as _build_tool_from_own
+        if isinstance(grounding_payload, dict):
+            tool_msg_tmp = _build_tool_from_own(grounding_payload)   # liefert {"role":"tool","content": JSON-STRING, ...} oder None
+            if tool_msg_tmp and isinstance(tool_msg_tmp.get("content"), str):
+                tool_json = tool_msg_tmp["content"]
+    except Exception:
+        logger.exception("Building tool message from own context failed")
 
-        if hasattr(response, "choices") and response.choices:
-            msg = response.choices[0].message
-            ctx = getattr(msg, "context", None) if hasattr(msg, "context") else None
-            if ctx:
-                citations = ctx.get("citations") or ctx.get("documents")
-                if citations:
-                    for i, c in enumerate(citations):
-                        text = c.get("content") or c.get("text") or ""
-                        src  = c.get("title") or c.get("filepath") or c.get("id") or "unknown"
-                        logger.debug("CITATION #%d src=%s len=%d preview=%r", i, src, len(text), text[:300])
-    except Exception as e:
-        logger.warning("Failed to debug citations: %s", e)
+    # FE-Response: NUR Tool (falls vorhanden) + Assistant
+    fe = {
+        "id": getattr(response, "id", str(uuid.uuid4())),
+        "model": getattr(response, "model", app_settings.azure_openai.model),
+        "created": getattr(response, "created", int(time.time())),
+        "object": getattr(response, "object", "chat.completion"),
+        "choices": [{"messages": []}],
+        "history_metadata": history_metadata,
+        "apim-request-id": apim_request_id
+    }
 
-    # 4) Normale Nicht-Streaming-Antwort bauen (robust)
-    try:
-        history_metadata = request_body.get("history_metadata", {})
-        non_streaming_response = format_non_streaming_response(
-            response, history_metadata, apim_request_id
-        )
-    except Exception as e:
-        logger.exception("format_non_streaming_response failed — falling back: %s", e)
-        # Fallback: minimaler Response-Body aus dem SDK-Objekt
-        try:
-            content = ""
-            if hasattr(response, "choices") and response.choices:
-                first = getattr(response.choices[0], "message", None)
-                if first and getattr(first, "content", None):
-                    content = str(first.content)
-            non_streaming_response = {
-                "id": request_body.get("messages", [{}])[-1].get("id") or str(uuid.uuid4()),
-                "choices": [{
-                    "messages": [{"role": "assistant", "content": content}],
-                }],
-                "apim_request_id": apim_request_id
-            }
-        except Exception:
-            # letzter Schutz – niemals ohne Response rausgehen
-            non_streaming_response = {
-                "id": str(uuid.uuid4()),
-                "choices": [{
-                    "messages": [{"role": "assistant", "content": ""}],
-                }],
-                "apim_request_id": apim_request_id
-            }
+    # 1) TOOL direkt vor ASSISTANT (wenn wir welche haben)
+    if tool_json:
+        fe["choices"][0]["messages"].append({
+            "id": getattr(response, "id", str(uuid.uuid4())),
+            "role": "tool",
+            "content": tool_json,
+            "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        })
 
-    # 5) Function Calling: falls aktiv, zweiter Turn und erneut formatieren
-    if app_settings.azure_openai.function_call_azure_functions_enabled:
-        try:
-            function_response = await process_function_call(response)
-            if function_response:
-                request_body["messages"].extend(function_response)
-                response2, apim_request_id2 = await send_chat_request(request_body, request_headers)
-                history_metadata = request_body.get("history_metadata", {})
-                try:
-                    non_streaming_response = format_non_streaming_response(
-                        response2, history_metadata, apim_request_id2
-                    )
-                except Exception as e:
-                    logger.exception("format_non_streaming_response (function pass) failed — keeping prior: %s", e)
-        except Exception as e:
-            logger.exception("Function call processing failed — continuing with first answer: %s", e)
+    # 2) ASSISTANT – plus context-Fallback mit demselben JSON
+    assistant_msg = {
+        "role": "assistant",
+        "id": str(uuid.uuid4()),
+        "content": assistant_text or ""
+    }
+    if tool_json:
+        # WICHTIG: Das Frontend akzeptiert auch assistant.context (JSON-String)
+        assistant_msg["context"] = tool_json
+    fe["choices"][0]["messages"].append(assistant_msg)
 
-    return non_streaming_response
+    logger.debug("Final FE response (truncated): %s", json.dumps(fe, indent=2)[:2000])
+    return fe
 
 
 class AzureOpenaiFunctionCallStreamState():
@@ -890,54 +1017,62 @@ async def process_function_call_stream(completionChunk, function_call_stream_sta
 
 
 async def stream_chat_request(request_body, request_headers):
-    response, apim_request_id = await send_chat_request(request_body, request_headers)
+    # NEU: 3 Werte entpacken, grounding_payload wird hier nicht gebraucht
+    response, apim_request_id, _grounding_payload = await send_chat_request(request_body, request_headers)
     history_metadata = request_body.get("history_metadata", {})
 
     async def generate(apim_request_id, history_metadata):
         if app_settings.azure_openai.function_call_azure_functions_enabled:
-            # Maintain state during function call streaming
             function_call_stream_state = AzureOpenaiFunctionCallStreamState()
 
             async for completionChunk in response:
-                stream_state = await process_function_call_stream(completionChunk, function_call_stream_state, request_body, request_headers, history_metadata, apim_request_id)
+                stream_state = await process_function_call_stream(
+                    completionChunk, function_call_stream_state,
+                    request_body, request_headers, history_metadata, apim_request_id
+                )
 
-                # No function call, asistant response
                 if stream_state == "INITIAL":
                     yield format_stream_response(completionChunk, history_metadata, apim_request_id)
 
-                # Function call stream completed, functions were executed.
-                # Append function calls and results to history and send to OpenAI, to stream the final answer.
                 if stream_state == "COMPLETED":
                     request_body["messages"].extend(function_call_stream_state.function_messages)
-                    function_response, apim_request_id = await send_chat_request(request_body, request_headers)
+                    # NEU: erneut 3 Werte entpacken; grounding_payload wird nicht genutzt
+                    function_response, apim_request_id, _ = await send_chat_request(request_body, request_headers)
                     async for functionCompletionChunk in function_response:
                         yield format_stream_response(functionCompletionChunk, history_metadata, apim_request_id)
-
         else:
             async for completionChunk in response:
                 yield format_stream_response(completionChunk, history_metadata, apim_request_id)
 
     return generate(apim_request_id=apim_request_id, history_metadata=history_metadata)
 
-
 async def conversation_internal(request_body, request_headers):
     try:
+        # Streaming wie gehabt (echte Tokens → NDJSON-Stream)
         if app_settings.azure_openai.stream and not app_settings.base_settings.use_promptflow:
-            result = await stream_chat_request(request_body, request_headers)
-            response = await make_response(format_as_ndjson(result))
-            response.timeout = None
-            response.mimetype = "application/json-lines"
-            return response
-        else:
-            result = await complete_chat_request(request_body, request_headers)
-            return jsonify(result)
+            result_iter = await stream_chat_request(request_body, request_headers)
+            resp = await make_response(format_as_ndjson(result_iter))
+            resp.timeout = None
+            resp.mimetype = "application/json-lines"
+            return resp
+
+        # Non-Streaming → exakt 1 NDJSON-Event (dein FE erwartet immer NDJSON)
+        one_obj = await complete_chat_request(request_body, request_headers)
+
+        async def one_event():
+            yield one_obj
+
+        resp = await make_response(format_as_ndjson(one_event()))
+        resp.timeout = None
+        resp.mimetype = "application/json-lines"
+        return resp
 
     except Exception as ex:
         logger.exception(ex)
         if hasattr(ex, "status_code"):
             return jsonify({"error": str(ex)}), ex.status_code
-        else:
-            return jsonify({"error": str(ex)}), 500
+        return jsonify({"error": str(ex)}), 500
+
 
 
 @bp.route("/conversation", methods=["POST"])
@@ -1428,7 +1563,7 @@ async def whoami():
                         "christin.schulz.extern@syna.de",
                         "charlotte.goiczyk.extern@syna.de",
                         "sebastian.ostermann@syna.de",
-                        "maximilian.hofmann@syna.de"
+                        "maximilian.hofmann@syna.de",
                         "sven.sorosz@suewag.de",
                         "andranik.stepanyan@suewag.de"]
 
