@@ -220,11 +220,24 @@ class _SearchCommonSettings(BaseSettings):
 
     @field_validator('include_contexts', mode='before')
     @classmethod
-    def split_contexts(cls, comma_separated_string: str, info: ValidationInfo) -> List[str]:
-        if isinstance(comma_separated_string, str) and len(comma_separated_string) > 0:
-            return parse_multi_columns(comma_separated_string)
+    # def split_contexts(cls, comma_separated_string: str, info: ValidationInfo) -> List[str]:
+    #     if isinstance(comma_separated_string, str) and len(comma_separated_string) > 0:
+    #         return parse_multi_columns(comma_separated_string)
         
-        return cls.model_fields[info.field_name].get_default()
+    #     return cls.model_fields[info.field_name].get_default()
+    @classmethod
+    def split_contexts(cls, v: any) -> List[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return []
+            return [part.strip() for part in s.split(",") if part.strip()]
+        if isinstance(v, (list, tuple)):
+            return [str(x).strip() for x in v if str(x).strip()]
+        raise TypeError("include_contexts must be a string, list, or tuple")
+
 
 
 class DatasourcePayloadConstructor(BaseModel, ABC):
