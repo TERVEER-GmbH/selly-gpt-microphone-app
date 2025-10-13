@@ -14,6 +14,9 @@ from pydantic import (
     ValidationError,
     ValidationInfo
 )
+import os
+import certifi
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 from pydantic.alias_generators import to_snake
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List, Literal, Optional
@@ -235,11 +238,24 @@ class _SearchCommonSettings(BaseSettings):
 
     @field_validator('include_contexts', mode='before')
     @classmethod
-    def split_contexts(cls, comma_separated_string: str, info: ValidationInfo) -> List[str]:
-        if isinstance(comma_separated_string, str) and len(comma_separated_string) > 0:
-            return parse_multi_columns(comma_separated_string)
+    # def split_contexts(cls, comma_separated_string: str, info: ValidationInfo) -> List[str]:
+    #     if isinstance(comma_separated_string, str) and len(comma_separated_string) > 0:
+    #         return parse_multi_columns(comma_separated_string)
 
-        return cls.model_fields[info.field_name].get_default()
+    #     return cls.model_fields[info.field_name].get_default()
+    def split_contexts(cls, v: any) -> List[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return []
+            return [p.strip() for p in s.split(",") if p.strip()]
+        if isinstance(v, (list, tuple)):
+            return [str(x).strip() for x in v if str(x).strip()]
+        return []
+                      
+            
 
 
 class DatasourcePayloadConstructor(BaseModel, ABC):
