@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, useContext, useLayoutEffect } from 'react'
 import { CommandBarButton, IconButton, Dialog, DialogType, Stack } from '@fluentui/react'
 import { SquareRegular, ShieldLockRegular, ErrorCircleRegular } from '@fluentui/react-icons'
+import React,  { Fragment } from 'react';
 
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -38,6 +39,7 @@ import { QuestionInput } from "../../components/QuestionInput";
 import { ChatHistoryPanel } from "../../components/ChatHistory/ChatHistoryPanel";
 import { AppStateContext } from "../../state/AppProvider";
 import { useBoolean } from "@fluentui/react-hooks";
+import { getTablePaginationActionsUtilityClass } from '@mui/material'
 
 const enum messageStatus {
   NotRunning = 'Not Running',
@@ -65,6 +67,10 @@ const Chat = () => {
   const [errorMsg, setErrorMsg] = useState<ErrorMessage | null>()
   const [logo, setLogo] = useState('')
   const [answerId, setAnswerId] = useState<string>('')
+
+  const assistantMessageRef = useRef<ChatMessage | null>(null)
+  const toolMessageRef = useRef<ChatMessage | null>(null)
+  const assistantContentRef = useRef<string>('')
 
   const errorDialogContentProps = {
     type: DialogType.close,
@@ -128,11 +134,7 @@ const Chat = () => {
       setShowAuthMessage(false)
     }
   }
-
-  let assistantMessage = {} as ChatMessage
-  let toolMessage = {} as ChatMessage
-  let assistantContent = ''
-
+ 
   useEffect(() => parseExecResults(execResults), [execResults])
 
   const parseExecResults = (exec_results_: any): void => {
@@ -145,45 +147,70 @@ const Chat = () => {
     if (typeof resultMessage.content === "string" && resultMessage.content.includes('all_exec_results')) {
       const parsedExecResults = JSON.parse(resultMessage.content) as AzureSqlServerExecResults
       setExecResults(parsedExecResults.all_exec_results)
-      assistantMessage.context = JSON.stringify({
+
+      if(!assistantMessageRef.current) assistantMessageRef.current = {} as ChatMessage
+      assistantMessageRef.current.context = JSON.stringify({
         all_exec_results: parsedExecResults.all_exec_results
       })
+  }
+    if (resultMessage.role === TOOL) {
+      toolMessageRef.current = {
+        ...resultMessage,
+        id: resultMessage.id || uuid(),
+        date: new Date().toISOString()
+      }
+      return
     }
 
     if (resultMessage.role === ASSISTANT) {
       setAnswerId(resultMessage.id)
-      assistantContent += resultMessage.content
-      assistantMessage = { ...assistantMessage, ...resultMessage }
-      assistantMessage.content = assistantContent
+      const chunk = typeof resultMessage.content === 'string' ? resultMessage.content : ''
+      assistantContentRef.current = (assistantContentRef.current || '') + chunk
 
-      if (resultMessage.context) {
-        toolMessage = {
-          id: uuid(),
-          role: TOOL,
-          content: resultMessage.context,
-          date: new Date().toISOString()
-        }
+      const mergedAssistant: ChatMessage = {
+        ...(assistantMessageRef.current ?? resultMessage),
+        ...resultMessage,
+        content: assistantContentRef.current,
+        date: new Date().toISOString()
       }
-    }
+      assistantMessageRef.current = mergedAssistant
 
-    if (resultMessage.role === TOOL) toolMessage = resultMessage
-
-    if (!conversationId) {
-      isEmpty(toolMessage)
-        ? setMessages([...messages, userMessage, assistantMessage])
-        : setMessages([...messages, userMessage, toolMessage, assistantMessage])
-    } else {
-      isEmpty(toolMessage)
-        ? setMessages([...messages, assistantMessage])
-        : setMessages([...messages, toolMessage, assistantMessage])
+      //prev ist die aktuellste Nachrichtenserie z.b. :
+ /*     [
+  { role: 'user', content: 'Hallo' },
+  { role: 'assistant', content: 'Hallo! Wie kann ich ihnen helfen?' }
+]
+  */
+      setMessages(prev => {
+        const hasAssistant = prev.some(m => m.role === ASSISTANT && m.id === mergedAssistant.id)
+        if (!hasAssistant) {
+          if (toolMessageRef.current && !prev.some(m => m.role === TOOL && m.id === toolMessageRef.current!.id)) {
+            return [...prev, toolMessageRef.current!, mergedAssistant]
+          }
+          return [...prev, mergedAssistant]
+        }
+        const updated = [...prev]
+        for (let i = updated.length - 1; i >= 0; i--){
+          if (updated[i].role === ASSISTANT && updated[i].id === mergedAssistant.id) {
+            updated[i] = mergedAssistant
+            break
+          }
+        }
+        return updated
+      })
     }
-  }
+  };
 
   const makeApiRequestWithoutCosmosDB = async (question: ChatMessage["content"], conversationId?: string) => {
     setIsLoading(true)
     setShowLoadingMessage(true)
     const abortController = new AbortController()
     abortFuncs.current.unshift(abortController)
+
+    //reset the streams at the beginning
+    assistantMessageRef.current = null
+    toolMessageRef.current = null
+    assistantContentRef.current = ''
 
     const questionContent = typeof question === 'string' ? question : [{ type: "text", text: question[0].text }, { type: "image_url", image_url: { url: question[1].image_url.url } }]
     question = typeof question !== 'string' && question[0]?.text?.length > 0 ? question[0].text : question
@@ -197,12 +224,15 @@ const Chat = () => {
 
     let conversation: Conversation | null | undefined
     if (!conversationId) {
+      // new conversation
       conversation = {
         id: conversationId ?? uuid(),
         title: question as string,
         messages: [userMessage],
         date: new Date().toISOString()
       }
+      appStateContext?.dispatch({ type: 'UPDATE_CURRENT_CHAT', payload:conversation })
+      setMessages(conversation.messages)
     } else {
       conversation = appStateContext?.state?.currentChat
       if (!conversation) {
@@ -213,11 +243,35 @@ const Chat = () => {
         return
       } else {
         conversation.messages.push(userMessage)
+        appStateContext?.dispatch({ type: 'UPDATE_CURRENT_CHAT', payload:conversation })
+        setMessages(conversation.messages)
       }
     }
 
-    appStateContext?.dispatch({ type: 'UPDATE_CURRENT_CHAT', payload: conversation })
-    setMessages(conversation.messages)
+    // appStateContext?.dispatch({ type: 'UPDATE_CURRENT_CHAT', payload: conversation })
+    // setMessages(prev => [...prev, ...(conversationId ? [userMessage]: [userMessage])])
+    // "..." is the spread operator:
+    /*
+    for ex:
+    const arr1 = [1, 2];
+    const arr2 = [3, 4];
+    const newArr = [...arr1, ...arr2];
+    console.log(newArr); // [1, 2, 3, 4]
+    */
+
+    // "?" is the condiiton
+    /*
+    condiiton ? ifTrue : ifFalse
+    for ex:
+    let x = isloggedIn ? 'Welcome' : 'Please log in';
+    */
+
+    /*
+    prev => [...prev, ...(conversationId ? [userMessage]: [userMessage])] means:
+    put this list in place of prev 
+
+    */
+
 
     const request: ConversationRequest = {
       messages: [...conversation.messages.filter(answer => answer.role !== ERROR)]
@@ -268,9 +322,18 @@ const Chat = () => {
             }
           })
         }
-        conversation.messages.push(toolMessage, assistantMessage)
-        appStateContext?.dispatch({ type: 'UPDATE_CURRENT_CHAT', payload: conversation })
-        setMessages([...messages, toolMessage, assistantMessage])
+        // conversation.messages.push(toolMessage, assistantMessage)
+        // appStateContext?.dispatch({ type: 'UPDATE_CURRENT_CHAT', payload: conversation })
+        // setMessages([...messages, toolMessage, assistantMessage])
+
+        //only write the final versions on conversations
+        if (assistantMessageRef.current) {
+          if (toolMessageRef.current) {
+            conversation.messages.push(toolMessageRef.current)
+          }
+          conversation.messages.push(assistantMessageRef.current)
+        }
+        appStateContext?.dispatch({ type: 'UPDATE_CURRENT_CHAT', payload: conversation})
       }
     } catch (e) {
       if (!abortController.signal.aborted) {
@@ -292,9 +355,9 @@ const Chat = () => {
         }
         conversation.messages.push(errorChatMsg)
         appStateContext?.dispatch({ type: 'UPDATE_CURRENT_CHAT', payload: conversation })
-        setMessages([...messages, errorChatMsg])
+        setMessages(prev => [...prev, errorChatMsg])
       } else {
-        setMessages([...messages, userMessage])
+        // setMessages(prev => [...prev, userMessage]) comment out this part because when we stop generating then we see our message double
       }
     } finally {
       setIsLoading(false)
@@ -311,6 +374,12 @@ const Chat = () => {
     setShowLoadingMessage(true)
     const abortController = new AbortController()
     abortFuncs.current.unshift(abortController)
+
+    //reset the ref's at the beginnig of stream
+    assistantMessageRef.current = null
+    toolMessageRef.current = null
+    assistantContentRef.current = ''
+
     const questionContent = typeof question === 'string' ? question : [{ type: "text", text: question[0].text }, { type: "image_url", image_url: { url: question[1].image_url.url } }]
     question = typeof question !== 'string' && question[0]?.text?.length > 0 ? question[0].text : question
 
@@ -333,18 +402,33 @@ const Chat = () => {
         return
       } else {
         conversation.messages.push(userMessage)
+        appStateContext?.dispatch({ type: 'UPDATE_CURRENT_CHAT', payload: conversation })
+        setMessages(conversation.messages)
         request = {
           messages: [...conversation.messages.filter(answer => answer.role !== ERROR)]
         }
       }
     } else {
+      const newConversation: Conversation = {
+        id: uuid(),
+        title: typeof question === 'string' ? question : 'New chat',
+        messages: [userMessage],
+        date: new Date().toISOString()
+      };
+
+      appStateContext?.dispatch({
+        type: 'UPDATE_CURRENT_CHAT',
+        payload: newConversation
+      });
+
+      setMessages(newConversation.messages);
+
       request = {
-        messages: [userMessage].filter(answer => answer.role !== ERROR)
+        messages: [...newConversation.messages.filter(answer => answer.role !== ERROR)]
       }
-      setMessages(request.messages)
     }
     let result = {} as ChatResponse
-    var errorResponseMessage = 'Please try again. If the problem persists, please contact the site administrator.'
+    let errorResponseMessage = 'Please try again. If the problem persists, please contact the site administrator.'
     try {
       const response = conversationId
         ? await historyGenerate(request, abortController.signal, conversationId)
@@ -371,7 +455,7 @@ const Chat = () => {
           }
           resultConversation.messages.push(errorChatMsg)
         } else {
-          setMessages([...messages, userMessage, errorChatMsg])
+          setMessages(prev => [...prev, errorChatMsg])
           setIsLoading(false)
           setShowLoadingMessage(false)
           abortFuncs.current = abortFuncs.current.filter(a => a !== abortController)
@@ -438,9 +522,10 @@ const Chat = () => {
             abortFuncs.current = abortFuncs.current.filter(a => a !== abortController)
             return
           }
-          isEmpty(toolMessage)
-            ? resultConversation.messages.push(assistantMessage)
-            : resultConversation.messages.push(toolMessage, assistantMessage)
+          if (assistantMessageRef.current) {
+            if (toolMessageRef.current) resultConversation.messages.push(toolMessageRef.current)
+            resultConversation.messages.push(assistantMessageRef.current)
+          }
         } else {
           resultConversation = {
             id: result.history_metadata.conversation_id,
@@ -448,20 +533,18 @@ const Chat = () => {
             messages: [userMessage],
             date: result.history_metadata.date
           }
-          isEmpty(toolMessage)
-            ? resultConversation.messages.push(assistantMessage)
-            : resultConversation.messages.push(toolMessage, assistantMessage)
+          if (assistantMessageRef.current) {
+            if (toolMessageRef.current) resultConversation.messages.push(toolMessageRef.current)
+            resultConversation.messages.push(assistantMessageRef.current)
+          }
         }
-        if (!resultConversation) {
+          if (!resultConversation) {
           setIsLoading(false)
           setShowLoadingMessage(false)
           abortFuncs.current = abortFuncs.current.filter(a => a !== abortController)
           return
         }
         appStateContext?.dispatch({ type: 'UPDATE_CURRENT_CHAT', payload: resultConversation })
-        isEmpty(toolMessage)
-          ? setMessages([...messages, assistantMessage])
-          : setMessages([...messages, toolMessage, assistantMessage])
       }
     } catch (e) {
       if (!abortController.signal.aborted) {
@@ -494,13 +577,13 @@ const Chat = () => {
         } else {
           if (!result.history_metadata) {
             console.error('Error retrieving data.', result)
-            let errorChatMsg: ChatMessage = {
+            let errorChatMsg2: ChatMessage = {
               id: uuid(),
               role: ERROR,
               content: errorMessage,
               date: new Date().toISOString()
             }
-            setMessages([...messages, userMessage, errorChatMsg])
+            setMessages(prev => [...prev, errorChatMsg2])
             setIsLoading(false)
             setShowLoadingMessage(false)
             abortFuncs.current = abortFuncs.current.filter(a => a !== abortController)
@@ -521,9 +604,9 @@ const Chat = () => {
           return
         }
         appStateContext?.dispatch({ type: 'UPDATE_CURRENT_CHAT', payload: resultConversation })
-        setMessages([...messages, errorChatMsg])
+        setMessages(prev => [...prev, errorChatMsg])
       } else {
-        setMessages([...messages, userMessage])
+        // setMessages(prev => [...prev, userMessage]) //comment out this part because when we stop generating then we see our message double
       }
     } finally {
       setIsLoading(false)
@@ -686,6 +769,7 @@ const Chat = () => {
             })
         }
       } else {
+        // no op
       }
       appStateContext?.dispatch({ type: 'UPDATE_CHAT_HISTORY', payload: appStateContext.state.currentChat })
       setMessages(appStateContext.state.currentChat.messages)
@@ -798,7 +882,7 @@ const Chat = () => {
             ) : (
               <div className={styles.chatMessageStream} style={{ marginBottom: isLoading ? '40px' : '0px' }} role="log">
                 {messages.map((answer, index) => (
-                  <>
+                  <Fragment key={answer.id ?? `${answer.role}-${index}`}> {/* React recognizes every message and only updates what has changed. It is more stable and faster. */}
                     {answer.role === 'user' ? (
                       <div className={styles.chatMessageUser} tabIndex={0}>
                         <div className={styles.chatMessageUserMessage}>
@@ -829,7 +913,7 @@ const Chat = () => {
                         <span className={styles.chatMessageErrorContent}>{typeof answer.content === "string" && answer.content}</span>
                       </div>
                     ) : null}
-                  </>
+                  </Fragment>
                 ))}
                 {showLoadingMessage && (
                   <>
