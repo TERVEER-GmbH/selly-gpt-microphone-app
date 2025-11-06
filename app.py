@@ -104,10 +104,11 @@ async def index():
 
 
 # the SDK will call our methods whenever it needs more audio samples
-class MemoryPCMCallback(speechsdk.audio.PullAudioInputStreamCallback):
+class MemoryPCMCallback(speechsdk.audio.PullAudioInputStreamCallback):  #class MemoryPCMCallback inherits from speechsd.audio.PullAudioInputStreamCallback
     def __init__(self, pcm_bytes: bytes):
         super().__init__()
         self._buf = io.BytesIO(pcm_bytes) #we take the full PCM data (a bytes object) and wrap it in a BytesIO, which behaves like a file in memory
+        #these are abstract methods. so we need to fill these ourselves.
     def read(self, buffer: memoryview) -> int:
         chunk = self._buf.read(buffer.nbytes)
         if not chunk:
