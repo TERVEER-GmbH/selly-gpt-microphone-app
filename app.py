@@ -68,6 +68,10 @@ from backend.routes.admin_prompts import prompts_bp
 from backend.routes.admin_runs import runs_bp
 from backend.routes.admin_compare import compare_bp
 
+import re
+from collections import deque
+import tiktoken
+
 
 logger = logging.getLogger('logger')
 logger.setLevel(logging.DEBUG)
@@ -96,6 +100,26 @@ SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
 # AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 # AZURE_RESULTS_CONTAINER = os.getenv("AZURE_RESULTS_CONTAINER")
 # AZURE_RESULTS_BLOB_NAME = os.getenv("AZURE_RESULTS_BLOB_NAME")
+
+MAX_TURNS = int(os.getenv("SELLY_MAX_HISTORY_TURNS"))
+MAX_TOKENS = int(os.getenv("SELLY_MAX_CONTEXT_TOKENS"))
+SUMMARIZE_AFTER = int(os.getenv("SELLY_SUMMARIZE_AFTER_TURNS"))
+
+# --- Tokenizer setup ------
+MODEL_NAME = os.getenv("AZURE_OPENAI_MODEL")
+
+def get_encoder(model_name: str):
+    try:
+        return tiktoken.encoding_for_model(model_name)
+    except Exception:
+        return tiktoken.get_encoding("cl100k_base") #cl100k_base is the name of the general tokenizer for nGPT-4, 4o, 3.5 family 
+    
+ENCODER = get_encoder(MODEL_NAME) #the tokenizer dictionary (it is always same)
+
+def count_text_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return len(ENCODER.encode(text))  #it divides the text into tokens and gives an ID list for each token in the text, the length of this list is the real amount of token; so we get the amount of token for the text we give
 
 
 # bp = Blueprint("routes", __name__, static_folder="static", template_folder="static")
