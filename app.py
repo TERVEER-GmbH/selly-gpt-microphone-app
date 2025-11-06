@@ -121,6 +121,62 @@ def count_text_tokens(text: str) -> int:
         return 0
     return len(ENCODER.encode(text))  #it divides the text into tokens and gives an ID list for each token in the text, the length of this list is the real amount of token; so we get the amount of token for the text we give
 
+def count_messages_tokens(messages: list) -> int:
+    """
+    a an approximate token count for the chat messages
+    """
+    total = 0
+    for m in messages:
+        total += count_text_tokens(m.get("content") or "")
+        #rol and format are approximately 4-8 tokens:
+        total += 6
+    return total
+
+def extract_memory_from_user_text(text: str, memory: dict):
+    #for ex capture the 5 digit PLZ
+    m = re.search(r"\b(\d{5})\b", text or "")
+    if m:
+        memory["plz"] = m.group(1)
+
+def inject_memory_system_block(text: str, memory: dict):
+    """
+    Extract stable user information from natural language input.
+    More general logic:
+    - key/value pairs (e.g. 'Tarif Basis', 'Verbrauch 3000') 
+    - 5-digit German postal codes
+    - kWh values
+    !we already capture everything with key\value pairs, sonce kWh and postal codes are used so often we indicate them separately
+    """
+    if not text:
+        return
+    
+    #General key-value patterns (for ex. Tarif Basis, Verbrauch 3000)
+    pairs = re.findall(r"([A-Za-zÄÖÜäöüß]+)\s*[:= ]\s*([A-Za-z0-9ÄÖÜäöüß./-]+)", text)
+    for key, value in pairs:
+        memory[key.lower()] = value
+
+    #detect plz
+    m = re.search(r"\b(\d{5})\b", text)
+    if m:
+        memory["plz"] = m.group(1)
+
+    #detect yearly usage in kWh
+    m = re.search(r"(\d{3,6})\s*kWh", text)
+    if m:
+        memory["verbrauch"] = m.group(1)
+
+def inject_memory_system_block(messages: list, memory: dict):
+    """
+    Add a system message at the top telling the model what user facts should be remembered across turns
+    """
+    if not memory:
+        return messages
+    mem_line = ", ".join(f"{k}={v}" for k, v in memory.items())
+    messages.insert(0, {
+        "role": "system",
+        "content": f"Persisted user facts to respect in follow-ups: {mem_line}"
+    })
+    return messages
 
 # bp = Blueprint("routes", __name__, static_folder="static", template_folder="static")
 bp = Blueprint("routes", __name__)
