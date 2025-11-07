@@ -116,7 +116,7 @@ def get_encoder(model_name: str):
     except Exception:
         return tiktoken.get_encoding("cl100k_base") #cl100k_base is the name of the general tokenizer for GPT-4, 4o, 3.5 family 
     
-ENCODER = get_encoder(MODEL_NAME) #the tokenizer dictionary (it is always same)
+ENCODER = get_encoder(MODEL_NAME) #the tokenizer dictionary
 
 def count_text_tokens(text: str) -> int:
     if not text:
@@ -187,7 +187,7 @@ async def load_last_messages_from_cosmos(conversation_id: str, user_id: str) -> 
     canon = []
     for m in msgs:
         role = m.get("role")
-        if role in ("user", "assitant"):
+        if role in ("user", "assistant"):
             canon.append({
                 "id": m.get("id"),
                 "role": m.get("role"),
@@ -208,6 +208,7 @@ async def build_contextful_messages(request_body: dict, request_headers) -> dict
     messages = request_body.get("messages", [])[:] # with "[:]", we copy the list so that we can configure the list without damaging the original one 
     history_meta = request_body.get("history_metadata", {}) or {}
     memory = history_meta.get("memory", {}) or {}
+    #Load history from CosmosDB
     conversation_id = history_meta.get("conversation_id")
 
     #only resolve user & hit Cosmos if Cosmos client exists AND we have a conversation id
@@ -215,14 +216,11 @@ async def build_contextful_messages(request_body: dict, request_headers) -> dict
         authenticated_user = get_authenticated_user_details(request_headers)
         #Identify user for CosmosDB lookup
         user_id = authenticated_user["user_principal_id"]
-        #Load history from CosmosDB
-        conversation_id = history_meta.get("conversation_id")
-        if conversation_id:
-            cosmos_msgs = await load_last_messages_from_cosmos(conversation_id, user_id)
-            merged = deque(cosmos_msgs) #deque is useful because it can function as FIFO as well as LIFO
-            for m in messages:
-                merged.append(m)
-            messages = list(merged)
+        cosmos_msgs = await load_last_messages_from_cosmos(conversation_id, user_id)
+        merged = deque(cosmos_msgs) #deque is useful because it can function as FIFO as well as LIFO
+        for m in messages:
+            merged.append(m)
+        messages = list(merged)
 
     # update memory from latest user message
     if messages and messages[-1].get("role") == "user":
@@ -239,7 +237,7 @@ async def build_contextful_messages(request_body: dict, request_headers) -> dict
     messages = system_msgs + turn_msgs
     #if the system msgs weren't added then model could forget the rules, answer in wrong format, not apply the plz rules, behave like a free chatbot
 
-    while count_messages_tokens(messages) > MAX_TOKENS and len(messages) > 3: #system + user's last message + chatbot's message 
+    while count_messages_tokens(messages) > MAX_TOKENS and len(messages) > 3: #the 3 is system + user's last message + chatbot's message , so it should be minimum three of these (of course it can be more than 3 but we should consider that the message tokens should not be greater than MAX, if it is then we delete some messages)
         for i in range(1, len(messages)): #skip 0 (system block); index 0 is system, index 1 is user, index 2 is assistant, index 3 is user, index 4 is assistant, ...
             if messages[i]["role"] in ("user", "assistant"):
                 del messages[i] #delete the message[i], so we don't delete the system messages only the user and assistant in order to decrease the token
