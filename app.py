@@ -101,7 +101,7 @@ SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
 # AZURE_RESULTS_CONTAINER = os.getenv("AZURE_RESULTS_CONTAINER")
 # AZURE_RESULTS_BLOB_NAME = os.getenv("AZURE_RESULTS_BLOB_NAME")
 
-
+# =============== START Selly Context Helpers ======================
 
 MAX_TURNS = int(os.getenv("SELLY_MAX_HISTORY_TURNS"))
 MAX_TOKENS = int(os.getenv("SELLY_MAX_CONTEXT_TOKENS"))
@@ -112,9 +112,9 @@ MODEL_NAME = os.getenv("AZURE_OPENAI_MODEL")
 
 def get_encoder(model_name: str):
     try:
-        return tiktoken.encoding_for_model(model_name)
+        return tiktoken.encoding_for_model(model_name) #tikotken is a tokenizer by OpenAI
     except Exception:
-        return tiktoken.get_encoding("cl100k_base") #cl100k_base is the name of the general tokenizer for nGPT-4, 4o, 3.5 family 
+        return tiktoken.get_encoding("cl100k_base") #cl100k_base is the name of the general tokenizer for GPT-4, 4o, 3.5 family 
     
 ENCODER = get_encoder(MODEL_NAME) #the tokenizer dictionary (it is always same)
 
@@ -130,17 +130,12 @@ def count_messages_tokens(messages: list) -> int:
     total = 0
     for m in messages:
         total += count_text_tokens(m.get("content") or "")
-        #rol and format are approximately 4-8 tokens:
+        #role/format overhead is approximately 4-8 tokens:
         total += 6
     return total
 
-def extract_memory_from_user_text(text: str, memory: dict):
-    #for ex capture the 5 digit PLZ
-    m = re.search(r"\b(\d{5})\b", text or "")
-    if m:
-        memory["plz"] = m.group(1)
 
-def inject_memory_system_block(text: str, memory: dict):
+def extract_memory_from_user_text(text: str, memory: dict):
     """
     Extract stable user information from natural language input.
     More general logic:
@@ -151,7 +146,6 @@ def inject_memory_system_block(text: str, memory: dict):
     """
     if not text:
         return
-    
     #General key-value patterns (for ex. Tarif Basis, Verbrauch 3000)
     pairs = re.findall(r"([A-Za-zÄÖÜäöüß]+)\s*[:= ]\s*([A-Za-z0-9ÄÖÜäöüß./-]+)", text)
     for key, value in pairs:
@@ -183,6 +177,8 @@ def inject_memory_system_block(messages: list, memory: dict):
 async def load_last_messages_from_cosmos(conversation_id: str, user_id: str) -> list:
     """
     load Previous messages (user + assistant) from CosmosDB, ignoring tool/system messages
+    !warning: this function is currently out of service because we didn't combine it with any cosmosDB account, 
+    so we don't have any chat history to load yet!
     """
     if not current_app.cosmos_conversation_client:
         return []
@@ -191,7 +187,7 @@ async def load_last_messages_from_cosmos(conversation_id: str, user_id: str) -> 
     canon = []
     for m in msgs:
         role = m.get("role")
-        if role in ("user", "asssitant"):
+        if role in ("user", "assitant"):
             canon.append({
                 "id": m.get("id"),
                 "role": m.get("role"),
@@ -209,31 +205,60 @@ async def build_contextful_messages(request_body: dict, request_headers) -> dict
         - Applies token limit (MAX_TOKENS)
     """
 
-    messages = request_body.get("messages", [])[:]
+    messages = request_body.get("messages", [])[:] # with "[:]", we copy the list so that we can configure the list without damaging the original one 
     history_meta = request_body.get("history_metadata", {}) or {}
-    memory = history_meta.get("mmeory", {}) or {}
-
-    #Identify user for CosmosDB lookup
-    authenticated_user = get_authenticated_user_details(request_headers=request_headers)
-    user_id = authenticated_user["user_principal_id"]
-
-    #Load history from CosmosDB if conversation is known
+    memory = history_meta.get("memory", {}) or {}
     conversation_id = history_meta.get("conversation_id")
-    if conversation_id:
-        cosmos_msgs = await load_last_messages_from_cosmos(conversation_id, user_id)
-        merged = deque(cosmos_msgs)
-        for m in messages:
-            merged.append(m)
-        messages = list(merged)
+
+    #only resolve user & hit Cosmos if Cosmos client exists AND we have a conversation id
+    if current_app.cosmos_conversation_client and conversation_id:
+        authenticated_user = get_authenticated_user_details(request_headers)
+        #Identify user for CosmosDB lookup
+        user_id = authenticated_user["user_principal_id"]
+        #Load history from CosmosDB
+        conversation_id = history_meta.get("conversation_id")
+        if conversation_id:
+            cosmos_msgs = await load_last_messages_from_cosmos(conversation_id, user_id)
+            merged = deque(cosmos_msgs) #deque is useful because it can function as FIFO as well as LIFO
+            for m in messages:
+                merged.append(m)
+            messages = list(merged)
 
     # update memory from latest user message
-    if messages and messages[-1]["role"] == "user":
+    if messages and messages[-1].get("role") == "user":
         extract_memory_from_user_text(messages[-1]["content"], memory)
     
     # inject memory as system message at top
     messages = inject_memory_system_block(messages, memory)
 
-    #turn limit (drop the oldest messages until within limit)
+    #turn limit (only keep last N user+assistant messages)
+    system_msgs = [m for m in messages if m["role"] == "system"]
+    turn_msgs = [m for m in messages if m["role"] in ("user", "assistant")]
+    turn_msgs = turn_msgs[-2*MAX_TURNS:] #last 2*MAX_TURNS messages per turn, for ex. MAX_TURNS = 8 so the last 16 messages.
+    #messages has [user1, bot1, user2, bot2, user3, bot3, user4, bot4, user5, bot5], so we need both both and user messages that's why *2, and -2 because we want the first parts out and only the last parts!
+    messages = system_msgs + turn_msgs
+    #if the system msgs weren't added then model could forget the rules, answer in wrong format, not apply the plz rules, behave like a free chatbot
+
+    while count_messages_tokens(messages) > MAX_TOKENS and len(messages) > 3: #system + user's last message + chatbot's message 
+        for i in range(1, len(messages)): #skip 0 (system block); index 0 is system, index 1 is user, index 2 is assistant, index 3 is user, index 4 is assistant, ...
+            if messages[i]["role"] in ("user", "assistant"):
+                del messages[i] #delete the message[i], so we don't delete the system messages only the user and assistant in order to decrease the token
+                break
+    
+    #Debug log: how much context goes in
+    used_msgs = [m for m in messages if m.get("role") in ("user", "assistant")]
+    turns = len(used_msgs) / 2
+    total_tokens = count_messages_tokens(messages)
+    logging.info(f"[CONTEXT] Using {len(used_msgs)} messages (~{turns:.1f} turns) | ~{total_tokens} tokens")
+    
+    # store memory back into metadata
+    history_meta["memory"] = memory
+    request_body["history_metadata"] = history_meta
+    request_body["messages"] = messages
+    return request_body
+
+#================== END Selly Context Helpers =======================
+
     
 # bp = Blueprint("routes", __name__, static_folder="static", template_folder="static")
 bp = Blueprint("routes", __name__)
@@ -1337,6 +1362,8 @@ async def stream_chat_request(request_body, request_headers):
 
 async def conversation_internal(request_body, request_headers):
     try:
+        #build context (memory, trimming, token cap)
+        request_body = await build_contextful_messages(request_body, request_headers)
         # Streaming wie gehabt (echte Tokens → NDJSON-Stream)
         if app_settings.azure_openai.stream and not app_settings.base_settings.use_promptflow:
             result_iter = await stream_chat_request(request_body, request_headers)
