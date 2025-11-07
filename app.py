@@ -101,6 +101,8 @@ SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
 # AZURE_RESULTS_CONTAINER = os.getenv("AZURE_RESULTS_CONTAINER")
 # AZURE_RESULTS_BLOB_NAME = os.getenv("AZURE_RESULTS_BLOB_NAME")
 
+
+
 MAX_TURNS = int(os.getenv("SELLY_MAX_HISTORY_TURNS"))
 MAX_TOKENS = int(os.getenv("SELLY_MAX_CONTEXT_TOKENS"))
 SUMMARIZE_AFTER = int(os.getenv("SELLY_SUMMARIZE_AFTER_TURNS"))
@@ -178,6 +180,61 @@ def inject_memory_system_block(messages: list, memory: dict):
     })
     return messages
 
+async def load_last_messages_from_cosmos(conversation_id: str, user_id: str) -> list:
+    """
+    load Previous messages (user + assistant) from CosmosDB, ignoring tool/system messages
+    """
+    if not current_app.cosmos_conversation_client:
+        return []
+    
+    msgs = await current_app.cosmos_conversation_client.get_messages(user_id, conversation_id)
+    canon = []
+    for m in msgs:
+        role = m.get("role")
+        if role in ("user", "asssitant"):
+            canon.append({
+                "id": m.get("id"),
+                "role": m.get("role"),
+                "content": m.get("content", "")
+            })
+    return canon
+
+async def build_contextful_messages(request_body: dict, request_headers) -> dict:
+    """
+    main logic:
+        - Loads past messages (if conversation_id exists)
+        - Extracts memory from the latest user message
+        - Injects memory as a system block
+        - Applies turn limit (MAX_TURNS)
+        - Applies token limit (MAX_TOKENS)
+    """
+
+    messages = request_body.get("messages", [])[:]
+    history_meta = request_body.get("history_metadata", {}) or {}
+    memory = history_meta.get("mmeory", {}) or {}
+
+    #Identify user for CosmosDB lookup
+    authenticated_user = get_authenticated_user_details(request_headers=request_headers)
+    user_id = authenticated_user["user_principal_id"]
+
+    #Load history from CosmosDB if conversation is known
+    conversation_id = history_meta.get("conversation_id")
+    if conversation_id:
+        cosmos_msgs = await load_last_messages_from_cosmos(conversation_id, user_id)
+        merged = deque(cosmos_msgs)
+        for m in messages:
+            merged.append(m)
+        messages = list(merged)
+
+    # update memory from latest user message
+    if messages and messages[-1]["role"] == "user":
+        extract_memory_from_user_text(messages[-1]["content"], memory)
+    
+    # inject memory as system message at top
+    messages = inject_memory_system_block(messages, memory)
+
+    #turn limit (drop the oldest messages until within limit)
+    
 # bp = Blueprint("routes", __name__, static_folder="static", template_folder="static")
 bp = Blueprint("routes", __name__)
 
