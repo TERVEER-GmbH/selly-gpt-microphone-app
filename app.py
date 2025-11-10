@@ -107,6 +107,29 @@ MAX_TURNS = int(os.getenv("SELLY_MAX_HISTORY_TURNS"))
 MAX_TOKENS = int(os.getenv("SELLY_MAX_CONTEXT_TOKENS"))
 SUMMARIZE_AFTER = int(os.getenv("SELLY_SUMMARIZE_AFTER_TURNS"))
 
+ALLOWED = {
+    "plz": r"(plz|postleitzahl)",
+    "verbrauch": r"(verbrauch|jahresverbrauch|annual[ -]?usage)",
+    "kwh": r"(kwh)",
+    "ort": r"(ort|stadt|city|gemeinde)",
+    "strasse": r"(straße|strasse|str\.)",
+    "tarif": r"(tarif|produkt|tarifname)",
+}
+
+#value: a single word or at most 4 words 
+VALUE = r"[A-Za-z0-9ÄÖÜäöüß./-]+(?:\s+[A-Za-zÄÖÜäöüß./-]+){0,3}"
+
+def norm_key(k:str) -> str:
+    k = k.lower()
+    if re.fullmatch(ALLOWED["plz"], k, flags=re.I): return "plz" #control if the text match with the key and case-insensitive
+    if re.fullmatch(ALLOWED["verbrauch"], k, flags=re.I): return "verbrauch"
+    if re.fullmatch(ALLOWED["kwh"], k, flags=re.I): return "kwh"
+    if re.fullmatch(ALLOWED["ort"], k, flags=re.I): return "ort"
+    if re.fullmatch(ALLOWED["strasse"], k, flags=re.I): return "strasse"
+    if re.fullmatch(ALLOWED["tarif"], k, flags=re.I): return "tarif"
+    return "" #for unknown key
+
+
 # --- Tokenizer setup ------
 MODEL_NAME = os.getenv("AZURE_OPENAI_MODEL")
 
@@ -125,7 +148,7 @@ def count_text_tokens(text: str) -> int:
 
 def count_messages_tokens(messages: list) -> int:
     """
-    a an approximate token count for the chat messages
+    an approximate token count for the chat messages
     """
     total = 0
     for m in messages:
@@ -134,6 +157,17 @@ def count_messages_tokens(messages: list) -> int:
         total += 6
     return total
 
+def clean_value(key:str, val:str) -> str:
+    key = key.lower()
+    v = val.strip().strip(",.;:")
+    
+    if key in ("verbrauch", "kwh"):
+        m = re.search(r"(\d{3,6})", v) #3-6 digit number
+        return m.group(1) if m else v
+    if key == "plz":
+        m = re.search(r"\b(\d{5})\b", v)
+        return m.group(1) if m else v
+    return v
 
 def extract_memory_from_user_text(text: str, memory: dict):
     """
@@ -142,24 +176,40 @@ def extract_memory_from_user_text(text: str, memory: dict):
     - key/value pairs (e.g. 'Tarif Basis', 'Verbrauch 3000') 
     - 5-digit German postal codes
     - kWh values
-    !we already capture everything with key\value pairs, sonce kWh and postal codes are used so often we indicate them separately
+    !we already capture everything with key\value pairs, since kWh and postal codes are used so often we indicate them separately
     """
     if not text:
         return
-    #General key-value patterns (for ex. Tarif Basis, Verbrauch 3000)
-    pairs = re.findall(r"([A-Za-zÄÖÜäöüß]+)\s*[:= ]\s*([A-Za-z0-9ÄÖÜäöüß./-]+)", text)
-    for key, value in pairs:
-        memory[key.lower()] = value
+    
+    #general key-value
+    kv_regex = r"(?i)\b({keys})\b\s*[:= ]\s*({VALUE})(?:\s*kwh\b)?".format(
+        keys="|".join(ALLOWED.values()),
+        VALUE= VALUE,
+    )
+    for k_raw, v_raw in re.findall(kv_regex, text, flags=re.I):
+        key = norm_key(k_raw)
+        if not key:
+            continue
+        memory[key] = clean_value(key, v_raw)
+    
 
-    #detect plz
-    m = re.search(r"\b(\d{5})\b", text)
+    #detect postleitzahl
+    m = re.search(r"(?i)\b(?:plz|postleitzahl)\b[^0-9]{0,10}(\d{5})", text)
     if m:
         memory["plz"] = m.group(1)
 
-    #detect yearly usage in kWh
-    m = re.search(r"(\d{3,6})\s*kWh", text)
+    #detect verbrauch...kwh
+    m = re.search(r"(?i)\b(\d{3,6})\s*kwh\b", text)
     if m:
         memory["verbrauch"] = m.group(1)
+
+    if "plz" not in memory:
+        near = re.search(r"(?i)\b(plz|postleitzahl)\b", text)
+        if near:
+            m = re.search(r"\b(\d{5})\b", text)
+            if m:
+                memory["plz"] = m.group(1)
+    logging.debug(f"[MEM] extracted={memory}")
 
 def inject_memory_system_block(messages: list, memory: dict):
     """
@@ -233,7 +283,7 @@ async def build_contextful_messages(request_body: dict, request_headers) -> dict
     system_msgs = [m for m in messages if m["role"] == "system"]
     turn_msgs = [m for m in messages if m["role"] in ("user", "assistant")]
     turn_msgs = turn_msgs[-2*MAX_TURNS:] #last 2*MAX_TURNS messages per turn, for ex. MAX_TURNS = 8 so the last 16 messages.
-    #messages has [user1, bot1, user2, bot2, user3, bot3, user4, bot4, user5, bot5], so we need both both and user messages that's why *2, and -2 because we want the first parts out and only the last parts!
+    #messages has [user1, bot1, user2, bot2, user3, bot3, user4, bot4, user5, bot5], so we need both bot and user messages that's why *2, and -2 because we want the first parts out and only the last parts!
     messages = system_msgs + turn_msgs
     #if the system msgs weren't added then model could forget the rules, answer in wrong format, not apply the plz rules, behave like a free chatbot
 
