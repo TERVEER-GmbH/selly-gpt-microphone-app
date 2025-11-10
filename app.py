@@ -108,12 +108,12 @@ MAX_TOKENS = int(os.getenv("SELLY_MAX_CONTEXT_TOKENS"))
 SUMMARIZE_AFTER = int(os.getenv("SELLY_SUMMARIZE_AFTER_TURNS"))
 
 ALLOWED = {
-    "plz": r"(plz|postleitzahl)",
-    "verbrauch": r"(verbrauch|jahresverbrauch|annual[ -]?usage)",
-    "kwh": r"(kwh)",
-    "ort": r"(ort|stadt|city|gemeinde)",
-    "strasse": r"(straße|strasse|str\.)",
-    "tarif": r"(tarif|produkt|tarifname)",
+    "plz": r"(?:plz|postleitzahl)",
+    "verbrauch": r"(?:verbrauch|jahresverbrauch|annual[ -]?usage)",
+    "kwh": r"(?:kwh)",
+    "ort": r"(?:ort|stadt|city|gemeinde)",
+    "strasse": r"(?:straße|strasse|str\.)",
+    "tarif": r"(?:tarif|produkt|tarifname)",
 }
 
 #value: a single word or at most 4 words 
@@ -160,14 +160,21 @@ def count_messages_tokens(messages: list) -> int:
 def clean_value(key:str, val:str) -> str:
     key = key.lower()
     v = val.strip().strip(",.;:")
-    
+
     if key in ("verbrauch", "kwh"):
-        m = re.search(r"(\d{3,6})", v) #3-6 digit number
-        return m.group(1) if m else v
+        #for ex 3.200 will be reminded as 3200
+        digits = re.sub(r"\D", "", v)
+        return digits if 3 <= len(digits) <= 6 else ""
+    
     if key == "plz":
+        #5 digits
         m = re.search(r"\b(\d{5})\b", v)
-        return m.group(1) if m else v
-    return v
+        return m.group(1) if m else ""
+    
+    #for other type of keys (ort, straße, tarif)
+    return v or ""
+    
+
 
 def extract_memory_from_user_text(text: str, memory: dict):
     """
@@ -190,7 +197,9 @@ def extract_memory_from_user_text(text: str, memory: dict):
         key = norm_key(k_raw)
         if not key:
             continue
-        memory[key] = clean_value(key, v_raw)
+        cleaned = clean_value(key, v_raw)
+        if cleaned:
+            memory[key] = cleaned
     
 
     #detect postleitzahl
@@ -199,9 +208,11 @@ def extract_memory_from_user_text(text: str, memory: dict):
         memory["plz"] = m.group(1)
 
     #detect verbrauch...kwh
-    m = re.search(r"(?i)\b(\d{3,6})\s*kwh\b", text)
+    m = re.search(r"(?i)\b(\d{1,3}(?:[.\s]\d{3}){1,2}|\d{3,6})\s*kwh\b", text)
     if m:
-        memory["verbrauch"] = m.group(1)
+        val = re.sub(r"\D", "", m.group(1))
+        if 3 <= len(val) <= 6:
+            memory["verbrauch"] = val
 
     if "plz" not in memory:
         near = re.search(r"(?i)\b(plz|postleitzahl)\b", text)
