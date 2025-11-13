@@ -110,7 +110,6 @@ SUMMARIZE_AFTER = int(os.getenv("SELLY_SUMMARIZE_AFTER_TURNS"))
 ALLOWED = {
     "plz": r"(?:plz|postleitzahl)",
     "verbrauch": r"(?:verbrauch|jahresverbrauch|annual[ -]?usage)",
-    "kwh": r"(?:kwh)",
     "ort": r"(?:ort|stadt|city|gemeinde)",
     "strasse": r"(?:straße|strasse|str\.)",
     "tarif": r"(?:tarif|produkt|tarifname)",
@@ -119,11 +118,28 @@ ALLOWED = {
 #value: a single word or at most 4 words 
 VALUE = r"[A-Za-z0-9ÄÖÜäöüß./-]+(?:\s+[A-Za-zÄÖÜäöüß./-]+){0,3}"
 
+def normalize_plz(plz_raw: str) -> str:
+    """
+    when the plz is 4 digit then adds a 0 at the beginning
+    if it is 5 digit then it does nothing, so it doesn't affect the true plz's
+    """
+    if not plz_raw:
+        return ""
+    
+    digits = re.sub(r"\D", "", plz_raw)
+
+    if len(digits) == 4:
+        return "0" + digits
+    if len(digits) == 5:
+        return digits
+    
+    #if it is not the format we await then return that thing 
+    return digits
+
 def norm_key(k:str) -> str:
     k = k.lower()
     if re.fullmatch(ALLOWED["plz"], k, flags=re.I): return "plz" #control if the text match with the key and case-insensitive
     if re.fullmatch(ALLOWED["verbrauch"], k, flags=re.I): return "verbrauch"
-    if re.fullmatch(ALLOWED["kwh"], k, flags=re.I): return "kwh"
     if re.fullmatch(ALLOWED["ort"], k, flags=re.I): return "ort"
     if re.fullmatch(ALLOWED["strasse"], k, flags=re.I): return "strasse"
     if re.fullmatch(ALLOWED["tarif"], k, flags=re.I): return "tarif"
@@ -161,15 +177,17 @@ def clean_value(key:str, val:str) -> str:
     key = key.lower()
     v = val.strip().strip(",.;:")
 
-    if key in ("verbrauch", "kwh"):
+    if key == "verbrauch":
         #for ex 3.200 will be reminded as 3200
         digits = re.sub(r"\D", "", v)
         return digits if 3 <= len(digits) <= 6 else ""
     
     if key == "plz":
-        #5 digits
-        m = re.search(r"\b(\d{5})\b", v)
-        return m.group(1) if m else ""
+        normalized = normalize_plz(v)
+        #accept onyl if it is 5 digit
+        if re.fullmatch(r"\d{5}", normalized):
+            return normalized
+        return ""
     
     #for other type of keys (ort, straße, tarif)
     return v or ""
