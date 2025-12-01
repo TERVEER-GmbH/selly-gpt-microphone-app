@@ -15,3 +15,7 @@ azure-keyvault-secrets
 coverage
 pandas
 tiktoken>=0.7.0
+#--- Testing Libraries ---
+pytest
+pytest-asyncio
+httpx
